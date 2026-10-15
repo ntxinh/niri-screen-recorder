@@ -57,6 +57,9 @@ impl WfRecorder {
             "wf-recorder".to_string(),
             "-f".to_string(),
             req.part_path.to_string_lossy().into_owned(),
+            // `.part` suffix breaks format inference → name the muxer.
+            "-m".to_string(),
+            Self::muxer(req.part_path.as_path()).to_string(),
             "-c".to_string(),
             Self::codec(req.part_path.as_path()).to_string(),
             "-r".to_string(),
@@ -90,6 +93,18 @@ impl WfRecorder {
         {
             Some("webm") => "libvpx-vp9",
             _ => "libopenh264",
+        }
+    }
+
+    /// Muxer matching the output container: mp4 → mp4, webm → webm.
+    /// Same inner-extension rule as [`Self::codec`].
+    fn muxer(part_path: &std::path::Path) -> &'static str {
+        match std::path::Path::new(part_path.file_stem().unwrap_or_default())
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            Some("webm") => "webm",
+            _ => "mp4",
         }
     }
 }

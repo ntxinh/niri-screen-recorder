@@ -39,6 +39,12 @@ impl<B: CaptureBackend> Recorder<B> {
         &self.state
     }
 
+    /// `.part` path of the in-flight capture; `None` when not recording.
+    /// Read-only accessor so the CLI can report where video is going.
+    pub fn part_path(&self) -> Option<&std::path::Path> {
+        self.session.as_ref().map(|s| s.part_path.as_path())
+    }
+
     /// Start a capture for `target` (display or slurp-selected region).
     /// Errors when not `Idle`; a cancelled region selection is `Ok` and
     /// leaves the state `Idle`.

@@ -47,6 +47,17 @@ fn codec_is_openh264_and_fps_flag() {
     let a = WfRecorder::argv(&req_for(CaptureTarget::Display("DP-3".into())));
     assert_eq!(flag_value(&a, "-c"), Some("libopenh264"));
     assert_eq!(flag_value(&a, "-r"), Some("30"));
+    // `.part` defeats muxer inference — `-m` must be explicit.
+    assert_eq!(flag_value(&a, "-m"), Some("mp4"));
+}
+
+#[test]
+fn webm_ext_selects_vp9_and_webm_muxer() {
+    let mut req = req_for(CaptureTarget::Display("DP-3".into()));
+    req.part_path = PathBuf::from("/tmp/rec-1.webm.part");
+    let a = WfRecorder::argv(&req);
+    assert_eq!(flag_value(&a, "-m"), Some("webm"));
+    assert_eq!(flag_value(&a, "-c"), Some("libvpx-vp9"));
 }
 
 #[test]
