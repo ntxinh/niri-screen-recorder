@@ -22,6 +22,12 @@ use std::time::Duration;
 /// Exit codes: 0 ok, 1 not recording, 2 backend missing, 3 capture failure.
 pub(super) fn start(target: Target, output: Option<String>) -> ! {
     let settings = settings::load();
+    // Single instance: the pidfile is the lock (read_pidfile drops stale
+    // entries), so refuse a second start before truncating it.
+    if let Some(e) = read_pidfile() {
+        eprintln!("niri-recorder: already recording (pid {})", e.pid);
+        std::process::exit(1);
+    }
     let backend = match WfRecorder::detect() {
         Ok(b) => b,
         Err(e) => {
@@ -68,23 +74,37 @@ pub(super) fn start(target: Target, output: Option<String>) -> ! {
         None => println!("recording pid={pid}"),
     }
 
-    // ponytail: 100ms poll on pid liveness + flag; try_wait would be nicer
-    // but the session child isn't exposed by Recorder.
+    // ponytail: 100ms poll on flag + child state; try_wait would be nicer
+    // but the session child isn't exposed by Recorder. kill(pid, 0) is Ok
+    // on zombies, so a dead-but-unreaped child needs a /proc stat check.
+    let mut child_died = false;
     while !quit.load(Ordering::SeqCst) {
-        if kill(Pid::from_raw(pid as i32), None).is_err() {
+        if is_zombie(pid) || kill(Pid::from_raw(pid as i32), None).is_err() {
+            child_died = true;
             eprintln!("niri-recorder: recorder child exited unexpectedly");
             break;
         }
         thread::sleep(Duration::from_millis(100));
     }
 
-    match recorder.stop() {
-        Ok(path) => {
+    let stopped = recorder.stop();
+    // Child death is a capture failure even when stop() finalized the
+    // partial .part — report it as such, don't claim a clean save.
+    match (stopped, child_died) {
+        (Ok(path), false) => {
             println!("saved → {}", path.display());
             clear_pidfile();
             std::process::exit(0);
         }
-        Err(e) => {
+        (Ok(path), true) => {
+            eprintln!(
+                "niri-recorder: capture ended early; saved {}",
+                path.display()
+            );
+            clear_pidfile();
+            std::process::exit(3);
+        }
+        (Err(e), _) => {
             eprintln!("niri-recorder: stop failed: {e}");
             if let AppState::Failed(reason) = recorder.state() {
                 eprintln!("niri-recorder: {reason}");
@@ -93,6 +113,17 @@ pub(super) fn start(target: Target, output: Option<String>) -> ! {
             std::process::exit(3);
         }
     }
+}
+
+/// True when `pid` is a zombie (exited, not yet reaped). Reads
+/// `/proc/<pid>/stat` — field 3 after the last `)` is the state char;
+/// reading proc does not reap, so `stop_graceful` still works afterwards.
+fn is_zombie(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|s| s.rsplit(')').next().map(|rest| rest.to_owned()))
+        .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
+        .is_some_and(|state| state == "Z")
 }
 
 /// Signal the recorder recorded in the pidfile to stop.
@@ -185,10 +216,10 @@ fn first_line(binary: &str, args: &[&str]) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// XDG config path — mirrors the private resolver in `config::settings`.
+/// XDG config path via the settings resolver.
 fn config_path() -> String {
-    directories::ProjectDirs::from("", "", "niri-recorder")
-        .map(|p| p.config_dir().join("config.toml").display().to_string())
+    settings::config_dir()
+        .map(|d| d.join("config.toml").display().to_string())
         .unwrap_or_else(|| "(unknown)".into())
 }
 
@@ -250,5 +281,24 @@ mod tests {
     #[test]
     fn bare_invocation_has_no_subcommand() {
         assert!(parse(&["niri-recorder"]).unwrap().cmd.is_none());
+    }
+
+    /// A child that exited but wasn't waited on reads as zombie via /proc —
+    /// the seam the poll loop uses, since kill(pid, 0) is Ok on zombies.
+    #[test]
+    fn is_zombie_detects_exited_unreaped_child() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !super::is_zombie(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never reached zombie state"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.wait().unwrap(); // reap — also proves stop() can still reap
+        assert!(!super::is_zombie(pid));
+        assert!(!super::is_zombie(std::process::id())); // live process isn't Z
     }
 }

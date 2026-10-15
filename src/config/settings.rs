@@ -69,7 +69,7 @@ pub fn load_from_str(s: &str) -> Settings {
     }
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "niri-recorder").map(|p| p.config_dir().to_path_buf())
 }
 
