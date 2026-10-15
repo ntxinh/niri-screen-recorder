@@ -12,7 +12,7 @@ at (−1920,0) — a negative-coordinate layout. Intel CometLake-H UHD (iHD
 | Capability | Status | Evidence |
 |---|---|---|
 | Full-display capture (`-o <output>`) | ✅ | 1920×1080 H.264 MP4, playable, on both DP-3 and eDP-1 |
-| Multi-monitor capture | ✅ | `--output eDP-1` → 1920×1080, 62 frames over ~4 s of on-screen activity; `--output DP-3` → 85 frames in ~3 s. Both finalized and ffprobe-clean |
+| Multi-monitor capture | ✅ | `--output eDP-1` → 1920×1080, 62 frames / 2.03 s stream in a ~4 s capture window; `--output DP-3` → 85 frames in ~3 s. Both finalized and ffprobe-clean |
 | Negative-coordinate output layout | ✅ | eDP-1 at logical (−1920,0), DP-3 at (0,0); whole-display capture of either works. Region drags on the left monitor produce negative slurp origins — parsed (`tests/geometry_tests.rs`), but see pending row for live-drag verification |
 | Multi-display without `--output` | ✅ (error path) | `start --target display` → `backend unsupported: multiple displays; --output required`, exit 3 |
 | Disabled connector filtering | ✅ | eDP-1 `niri msg output off` → `diagnostics` lists only `DP-3` and `start --target display` records DP-3 without `--output`. Re-enabled → both listed, `--output` required again |

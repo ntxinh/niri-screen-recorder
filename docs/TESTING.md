@@ -64,7 +64,7 @@ support. Mark results in `docs/WAYLAND-NIRI-COMPATIBILITY.md`.
 - [x] Record while switching workspaces repeatedly, then stop — ~20 switches in a 60 s capture, uninterrupted
 - [x] Record while focusing other applications — focus/workspace churn during the 60 s run
 - [ ] Cancel region selection (Esc) → `cancelled`, exit 0, no file — needs a physical keyboard Esc during slurp
-- [x] Two monitors with different resolutions; `--output NAME` each — same resolution (1920×1080) on both; `--output` path verified on each
+- [x] `--output NAME` on each of two monitors — both are 1920×1080; mixed resolutions remains unverified (pending in `docs/WAYLAND-NIRI-COMPATIBILITY.md`)
 - [ ] Region selection on each monitor and across output boundaries — needs a real drag
 - [x] Mixed scaling / negative-coordinate layouts if present — negative-coordinate layout present (eDP-1 at −1920,0); mixed scale absent
 - [ ] Monitor disconnect during recording → clean stop, file preserved

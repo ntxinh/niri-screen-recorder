@@ -119,9 +119,10 @@ different `output_directory`.
 ### Disabled monitor still listed / recorded blank
 
 As of the disabled-connector fix, `niri msg output <NAME> off` removes
-the output from `diagnostics` and the GUI dropdown automatically — no
-action needed. On older builds a disabled connector appeared as a
-selectable output; upgrade or re-enable it.
+the output from `diagnostics` automatically (fresh query each run) and
+from the GUI dropdown on next launch — a running GUI keeps its
+already-populated list until restarted. On older builds a disabled
+connector appeared as a selectable output; upgrade or re-enable it.
 
 ### Recording has ~1 frame / duration N/A
 
