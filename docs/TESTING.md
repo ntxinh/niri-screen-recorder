@@ -11,11 +11,11 @@ require a live Wayland session.
 | `tests/state_machine_tests.rs` | `transition` table: Idle→Starting, region select/cancel paths, Spawned/SpawnFailed, Recording→Stopping→Completed, failed exit reports path, recorder death → Failed, Completed terminal, duplicate start rejected, invalid `(state,event)` pairs are no-ops |
 | `tests/controller_tests.rs` | `Recorder` over a fake backend: display start→stop finalizes `.part`, second start while recording errors, stop from idle errors, multi-output requires `--output`; pidfile round-trip and staleness (dead pid, argv0 mismatch incl. non-ASCII comm, malformed file removed) |
 | `tests/backend_tests.rs` | `WfRecorder::argv`: `-o`/`-g` flags, `-m`/`-c` from inner extension (mp4→mp4+libopenh264, webm→webm+libvpx-vp9), `-r` fps, Standard emits no `-p` opts vs High's bitrate AVOptions, **no `-a`/audio flag ever**, `.part` always paired with explicit muxer |
-| `src/cli/commands.rs` `mod tests` | Clap surface: `start` defaults/`--target`/`--output` parsing, invalid target rejected, `stop`/`status`/`diagnostics`/bare invocation; `is_zombie` detects an exited-but-unreaped child via `/proc/<pid>/stat` (the poll loop's child-death seam, since `kill(pid,0)` is `Ok` on zombies) |
+| `tests/process_tests.rs` | `ManagedChild`: graceful SIGINT stop reaps child and reports exit, missing binary → `CaptureError::Spawn`, SIGINT-ignoring child escalates to SIGTERM within the bounded window |
 | `tests/config_tests.rs` | Defaults when file missing, malformed TOML falls back with warning, `default_fps` restricted to 24/30/60, `~` tilde expansion to home |
 | `tests/filename_tests.rs` | `plan_output`: timestamped `screen-recording-*.mp4` in dir, never overwrites (collision suffix), `finalize` renames `.part`→final |
 | `tests/geometry_tests.rs` | `Geometry::parse_slurp`: `x,y WxH`, negative origins accepted, zero size and garbage rejected; `to_wf_arg` round-trip |
-| `src/cli/commands.rs` `mod tests` | Clap surface: subcommand parsing, `TargetArg` mapping, `first_line` stdout/stderr fallback |
+| `src/cli/commands.rs` `mod tests` | Clap surface: `start` defaults/`--target`/`--output` parsing, invalid target rejected, `stop`/`status`/`diagnostics`/bare invocation; `is_zombie` detects an exited-but-unreaped child via `/proc/<pid>/stat` (the poll loop's child-death seam, since `kill(pid,0)` is `Ok` on zombies). `first_line`/`diagnostics` internals are untested |
 
 ## Fake-child harness
 

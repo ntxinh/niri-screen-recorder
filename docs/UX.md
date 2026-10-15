@@ -46,8 +46,8 @@ observable through `start`'s own stdout/stderr while it runs.
 | `status` | stdout | `recording pid=N` / `idle` | 0 |
 | `diagnostics` | stdout | tool versions, outputs, backend caps, config path | 0 |
 
-Exit codes: **0** ok · **1** not recording / cannot signal · **2** backend
-missing or CLI parse error · **3** capture failure.
+Exit codes: **0** ok · **1** not recording / already recording / cannot
+signal · **2** backend missing or CLI parse error · **3** capture failure.
 
 ## Behavior notes
 

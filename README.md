@@ -35,7 +35,8 @@ over `wl-screenrec` and the XDG portal.
 Known limitations: variable frame rate output (wlr-screencopy damage
 tracking), no hardware encoding (VAAPI broken for this on CometLake iHD),
 `--output NAME` is not validated against detected outputs (a bad name
-surfaces as a wf-recorder spawn error), no GUI yet, region selection on
+surfaces later as a wf-recorder exit — `capture ended early` / `stop
+failed`, exit 3), no GUI yet, region selection on
 multi-monitor layouts untested.
 
 ## Install dependencies (Fedora 44, verified package names)
