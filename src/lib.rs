@@ -3,3 +3,4 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod files;
+pub mod ui;

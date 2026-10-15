@@ -3,7 +3,7 @@
 mod commands;
 
 use crate::config::settings::Target;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 
 #[derive(Parser)]
@@ -54,22 +54,24 @@ impl From<TargetArg> for Target {
     }
 }
 
-/// Exit codes: 0 ok, 1 not recording / already recording, 2 backend
-/// missing, unsupported backend or clap parse error, 3 capture failure.
-pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> anyhow::Result<()> {
+/// Exit codes: 0 ok, 1 not recording / already recording / no display,
+/// 2 backend missing, unsupported backend or clap parse error, 3 capture
+/// failure. Every path exits the process: never returns.
+pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> ! {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => e.exit(), // clap prints usage; DisplayHelp exits 0, errors 2
     };
     match cli.cmd {
         None => {
-            // Bare `niri-recorder`: help on stdout, exit 0.
-            Cli::command().print_help()?;
+            // Bare `niri-recorder`: launch the GUI. `ui::run` runs the
+            // main loop until the window closes and exits the process
+            // itself (code 1) when no display is available.
+            std::process::exit(i32::from(crate::ui::run().get()));
         }
         Some(Cmd::Start { target, output }) => commands::start(target, output),
         Some(Cmd::Stop) => commands::stop(),
         Some(Cmd::Status) => commands::status(),
         Some(Cmd::Diagnostics) => commands::diagnostics(),
     }
-    Ok(())
 }

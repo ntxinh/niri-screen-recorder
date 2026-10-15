@@ -1,6 +1,5 @@
 //! Command implementations. Handlers needing a specific exit code print
-//! their message and call `std::process::exit` — `run` returns `Ok(())`
-//! only for the bare-help path.
+//! their message and call `std::process::exit` — `run` never returns.
 //!
 //! `stop`/`status` operate on the pidfile alone: the recording process is
 //! the `start` invocation itself, signalled with SIGINT.
