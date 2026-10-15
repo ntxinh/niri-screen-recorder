@@ -3,8 +3,9 @@
 First step for anything: `niri-recorder diagnostics`. It prints the niri
 version, detected outputs (`niri msg --json outputs`), wf-recorder /
 slurp / ffprobe presence, the resolved config path, and backend
-capabilities. Exit codes: `0` ok · `1` not recording/cannot signal ·
-`2` backend missing or CLI parse error · `3` capture failure.
+capabilities. Exit codes: `0` ok · `1` not recording / already recording
+/ cannot signal · `2` backend missing or CLI parse error · `3` capture
+failure.
 
 ## Error messages and fixes
 
@@ -55,14 +56,18 @@ permissions mismatch (recorder started as another user/root). Check `ps
   `x,y WxH` violations is rejected by `Geometry::parse_slurp` (zero
   size, garbage) before reaching wf-recorder.
 
-### `recorder exited unexpectedly: <stderr tail>` / `recorder child exited unexpectedly` (exit 3)
+### `recorder child exited unexpectedly` and `stop failed: …` (exit 3)
 
-The wf-recorder child died or exited cleanly but wrote an empty `.part`
-(the empty file is deleted; nothing is claimed saved). The captured
-stderr tail is printed — it usually names the cause (bad output name,
-unsupported codec, protocol error). A mid-capture child death still
-finalizes whatever was written and reports `capture ended early; saved
+`recorder child exited unexpectedly` is the standalone line the `start`
+poll loop prints when the wf-recorder child dies mid-capture; the
+recording is then finalized and reported as `capture ended early; saved
 <path>` — the partial file is kept but the run is a failure (exit 3).
+
+`recorder exited unexpectedly: <stderr tail>` is not a standalone line —
+it appears as the `<err>` inside `stop failed: <err>` when the child
+exited cleanly but wrote an empty `.part` (the empty file is deleted;
+nothing is claimed saved). The captured stderr tail usually names the
+cause (bad output name, unsupported codec, protocol error).
 
 ### `stop failed: …` / stop timeouts
 
@@ -92,7 +97,8 @@ different `output_directory`.
 
 ### Config warnings
 
-Malformed `config.toml` or a `default_fps` other than 24/30/60 → logged
-warning (`RUST_LOG=warn` or a `tracing` env filter makes it visible) and
-defaults are used; the app never refuses to start over config.
-`niri-recorder diagnostics` prints the config path being read.
+A missing `config.toml` is silent — defaults apply. A malformed file or
+a `default_fps` other than 24/30/60 → logged warning (`RUST_LOG=warn` or
+a `tracing` env filter makes it visible) and defaults are used; the app
+never refuses to start over config. `niri-recorder diagnostics` prints
+the config path being read.

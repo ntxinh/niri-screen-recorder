@@ -6,7 +6,7 @@ pending · 🔜 deferred to Plan B (GUI) or later phase.
 
 | FR | Requirement | Status | Notes |
 |---|---|---|---|
-| FR-01 | Full-display recording | ⚠️ | `start --target display [--output NAME]` works; single output auto-selected, multiple outputs → explicit `--output` required (actionable error). Display picker UI and all-displays canvas deferred. Verified on single-output target only. |
+| FR-01 | Full-display recording | ⚠️ | `start --target display [--output NAME]` works; single output auto-selected, multiple outputs → explicit `--output` required (actionable error). `--output` is passed through unvalidated — a bad name surfaces as a wf-recorder spawn error, not a friendly check. Display picker UI and all-displays canvas deferred. Verified on single-output target only. |
 | FR-02 | Region recording | ⚠️ | `start --target region` runs `slurp`, parses `x,y WxH` (negative coords ok, zero-size/garbage rejected), cancel → clean `Idle`. Interactive slurp itself unverified on target (headless spike). |
 | FR-03 | Workspace independence | ✅ | Capture lives in the foreground `start` process, not tied to any window; workspace switching during capture verified uninterrupted (494 frames / 16.4 s). Exit-while-recording prompt deferred (no GUI). |
 | FR-04 | Multi-monitor support | ⚠️ | Outputs enumerated via `niri msg --json outputs`; `--output` selects one. Multi-monitor hot-plug/disconnect untested — single-output hardware. Combined-canvas capture intentionally out of scope. |

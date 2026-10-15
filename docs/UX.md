@@ -36,9 +36,8 @@ observable through `start`'s own stdout/stderr while it runs.
 | start begins | stdout | `recording → <path>.mp4.part` | — |
 | region pick cancelled | stdout | `cancelled` | 0 |
 | clean stop (Ctrl-C or `stop`) | stdout | `saved → <path>.mp4` | 0 |
-| child died mid-capture, partial saved | stderr | `capture ended early; saved <path>` | 3 |
-| stop/finalize failed | stderr | `stop failed: <err>` (+ failed reason) | 3 |
-| child exited unexpectedly | stderr | `recorder exited unexpectedly: <stderr tail>` | 3 |
+| child died mid-capture (poll loop) | stderr | `recorder child exited unexpectedly` then `capture ended early; saved <path>` | 3 |
+| stop/finalize failed (incl. child wrote empty `.part` → `recorder exited unexpectedly: <stderr tail>`) | stderr | `stop failed: <err>` (+ failed reason) | 3 |
 | second `start` while recording | stderr | `already recording (pid N)` | 1 |
 | `stop` with nothing running | stdout | `not recording` | 1 |
 | `stop` signal sent | stdout | `stop requested (pid N)` | 0 |
@@ -52,7 +51,8 @@ missing or CLI parse error · **3** capture failure.
 
 ## Behavior notes
 
-- Output paths print the *absolute* path after tilde expansion.
+- Output paths print the configured `output_directory` — `~` is
+  expanded, but a relative directory is printed relative, not resolved.
 - `start` takes 100 ms worst case to notice a signal (poll loop).
 - `stop` is fire-and-forget: it confirms the signal was delivered, not
   that the file finalized — finalization is reported by the `start`

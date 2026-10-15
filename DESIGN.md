@@ -111,8 +111,8 @@ niri-recorder            bare → help on stdout, exit 0
   diagnostics  tool versions, outputs, backend capabilities; exit 0
 ```
 
-Exit codes: 0 ok · 1 not recording / cannot signal · 2 backend missing or
-clap parse error · 3 capture failure.
+Exit codes: 0 ok · 1 not recording / already recording / cannot signal ·
+2 backend missing or clap parse error · 3 capture failure.
 
 ## Backend decision and evidence (spec §22, verified 2026-10-15)
 
@@ -138,9 +138,10 @@ demuxer). Details: `docs/CAPTURE-BACKENDS.md`.
 
 `~/.config/niri-recorder/config.toml` — `output_directory`,
 `default_target`, `default_fps` (24/30/60 only), `quality`
-(standard|high), `preferred_backend`. Missing or malformed config falls
-back to defaults with a warning; `~` expands only at the leading
-component. Runtime state under `$XDG_RUNTIME_DIR/niri-recorder/`. See
+(standard|high), `preferred_backend`. A missing config is silent; an
+unreadable or malformed one falls back to defaults with a warning; `~`
+expands only at the leading component. Runtime state under
+`$XDG_RUNTIME_DIR/niri-recorder/`. See
 `docs/REQUIREMENTS.md` FR-09.
 
 ## Security boundaries
@@ -148,7 +149,8 @@ component. Runtime state under `$XDG_RUNTIME_DIR/niri-recorder/`. See
 - argv-array subprocess spawning only; no shell strings, no env passthrough.
 - Video only — no audio flags, no microphone access.
 - All I/O local: output under the user's home, pidfile in a user-private
-  runtime dir (0600). No network use, no telemetry, never runs as root.
+  runtime dir (0600). No network use, no telemetry. Runs unprivileged by
+  design — no setuid or privileged code paths (don't run it as root).
 - wf-recorder stderr is captured to a bounded ring for diagnostics and
   surfaced on failure; nothing is logged to a file.
 

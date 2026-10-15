@@ -17,7 +17,7 @@ Fedora 44, native Wayland (`wayland-1`), Niri, single output DP-3
 | No audio in output | ✅ | ffprobe: single `video` stream; backend never emits `-a` |
 | Output enumeration via `niri msg --json outputs` | ✅ (unit + spike) | DP-3 detected; empty-list handling unit-tested |
 | Collision-safe output names / `.part` staging | ✅ (unit) | `tests/filename_tests.rs` |
-| SIGINT capture-survival when child is a different process | ✅ (unit) | pidfile+SIGINT control model, `tests/controller_tests.rs` |
+| `stop` → SIGINT → `start` handler → graceful finalize | ✅ (live smoke) | Verified by live smoke on target; automated coverage is unit-level only — `tests/controller_tests.rs` exercises pidfile staleness via `kill(pid,0)`/`comm`, nothing signals a live `start` process end-to-end |
 
 ## Pending manual verification
 
