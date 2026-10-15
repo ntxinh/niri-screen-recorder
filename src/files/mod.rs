@@ -1,1 +1,3 @@
-//! Output file management — implemented in a later task.
+//! Output file management.
+
+pub mod naming;
