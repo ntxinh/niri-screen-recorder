@@ -66,6 +66,9 @@ pub(super) struct Ui {
     /// Set by the close-while-recording prompt's "Stop recording and
     /// exit" response; the next Completed/Failed event closes the window.
     pending_quit: bool,
+    /// The open settings dialog, if any — a second gear-click re-presents
+    /// it instead of stacking a duplicate.
+    pub(super) settings_dialog: Option<adw::PreferencesDialog>,
     ctl: Rc<GuiController>,
     /// Weak so the Rc<Ui> held by window callbacks doesn't create a
     /// window→Ui→window cycle.
@@ -136,7 +139,9 @@ impl Ui {
             )
         {
             if let Some(w) = self.window.upgrade() {
-                w.close();
+                // Defer past this borrow_mut: w.close() fires
+                // close-request synchronously, whose handler borrows ui.
+                glib::idle_add_local_once(move || w.close());
             }
         }
     }
@@ -381,6 +386,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         backend_error,
         detail: None,
         pending_quit: false,
+        settings_dialog: None,
         ctl,
         window: window.downgrade(),
         recent,
@@ -420,7 +426,12 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     {
         let ui = Rc::clone(&ui);
         target_row.connect_selected_notify(move |_| {
-            ui.borrow_mut().refresh();
+            // apply_settings re-enters here while it already holds
+            // borrow_mut; it refreshes itself at the end, so a skipped
+            // refresh loses nothing.
+            if let Ok(mut ui) = ui.try_borrow_mut() {
+                ui.refresh();
+            }
         });
     }
     let primary = ui.borrow().primary.clone();
@@ -438,12 +449,19 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         });
     }
 
-    // Settings dialog over the main window.
+    // Settings dialog over the main window; a second click re-presents
+    // the open one rather than stacking a duplicate.
     {
         let ui = Rc::clone(&ui);
         let window = window.clone();
         settings_btn.connect_clicked(move |_| {
-            super::settings::present(&window, &ui);
+            let mut u = ui.borrow_mut();
+            match &u.settings_dialog {
+                Some(d) => d.present(Some(&window)),
+                None => {
+                    u.settings_dialog = Some(super::settings::present(&window, &ui));
+                }
+            }
         });
     }
 
@@ -464,8 +482,14 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
                     | AppState::Recording { .. }
                     | AppState::Stopping { .. }
             );
-            if !busy || close_prompt_open.get() {
+            if !busy {
                 return glib::Propagation::Proceed;
+            }
+            // A second close while the prompt is up must still veto —
+            // proceeding would drop GuiController onto a worker stuck in
+            // slurp with the quit flag never set (deadlock).
+            if close_prompt_open.get() {
+                return glib::Propagation::Stop;
             }
             close_prompt_open.set(true);
             let dialog = adw::AlertDialog::builder()

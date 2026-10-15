@@ -12,9 +12,14 @@ use libadwaita::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Present the preferences dialog over `parent`. Loads `config.toml`
-/// fresh so the rows always show on-disk state, not the launch snapshot.
-pub(super) fn present(parent: &adw::ApplicationWindow, ui: &Rc<RefCell<Ui>>) {
+/// Build and present the preferences dialog over `parent`; returns it so
+/// the caller can hold the open instance (single-instance guard in
+/// `Ui::settings_dialog`). Loads `config.toml` fresh so the rows always
+/// show on-disk state, not the launch snapshot.
+pub(super) fn present(
+    parent: &adw::ApplicationWindow,
+    ui: &Rc<RefCell<Ui>>,
+) -> adw::PreferencesDialog {
     // One shared copy; every row mutates it then applies.
     let settings = Rc::new(RefCell::new(settings::load()));
 
@@ -135,4 +140,14 @@ pub(super) fn present(parent: &adw::ApplicationWindow, ui: &Rc<RefCell<Ui>>) {
     let dialog = adw::PreferencesDialog::builder().title("Settings").build();
     dialog.add(&page);
     dialog.present(Some(parent));
+    // Clear the single-instance slot so the next gear-click rebuilds.
+    dialog.connect_closed({
+        let ui = Rc::clone(ui);
+        move |_| {
+            if let Ok(mut u) = ui.try_borrow_mut() {
+                u.settings_dialog = None;
+            }
+        }
+    });
+    dialog
 }

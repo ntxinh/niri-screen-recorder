@@ -194,8 +194,12 @@ impl RecentRecordings {
     }
 
     /// Point the list at a new output directory (settings dialog changed
-    /// it) and rescan immediately.
+    /// it) and rescan immediately. No-op when the dir didn't change —
+    /// apply_settings calls this on every persisted settings write.
     pub(super) fn set_dir(&mut self, dir: PathBuf) {
+        if self.dir == dir {
+            return;
+        }
         self.dir = dir;
         self.refresh();
     }

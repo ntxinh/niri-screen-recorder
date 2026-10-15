@@ -222,6 +222,13 @@ impl<B: CaptureBackend> Recorder<B> {
             }
             Err(e) => return Err(e),
         };
+        // ponytail: pid-reuse window — after wait() reaps slurp the
+        // watcher can hold its dead pid for ≤50 ms and a quit landing in
+        // that window would SIGKILL a recycled process. Accepted: the
+        // quit flag is user-driven (window close), so the odds of it
+        // arming in the exact ~50 ms after slurp exits *and* the pid
+        // being recycled are negligible; a generation-checked kill would
+        // double the code. Watcher exits on its own next tick.
         let watcher = self.quit.as_ref().map(|quit| {
             let quit = Arc::clone(quit);
             let pid = Pid::from_raw(child.pid() as i32);
