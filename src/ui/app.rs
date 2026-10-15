@@ -188,7 +188,12 @@ impl Ui {
         self.recent.set_dir(expand_tilde(&s.output_directory));
         // A config.toml edit can fix (or break) preferred_backend
         // mid-session — re-evaluate so Start un/re-blocks correctly.
-        self.backend_error = check_preferred_backend(s).err();
+        // Only when the probe already succeeded: a failed probe's
+        // BackendError must stand, else the status regresses to
+        // "Checking backend…" forever.
+        if self.backend_ready {
+            self.backend_error = check_preferred_backend(s).err();
+        }
         self.last_output.clone_from(&s.last_output);
         self.refresh();
     }
