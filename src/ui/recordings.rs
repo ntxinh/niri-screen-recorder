@@ -192,6 +192,13 @@ impl RecentRecordings {
         }
         self.widget.set_visible(!paths.is_empty());
     }
+
+    /// Point the list at a new output directory (settings dialog changed
+    /// it) and rescan immediately.
+    pub(super) fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
+        self.refresh();
+    }
 }
 
 #[cfg(test)]

@@ -18,13 +18,13 @@ use crate::config::settings::{self, expand_tilde, Quality, Target};
 use gtk4::{self as gtk, gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const APP_ID: &str = "io.github.niri_recorder";
-const FPS_CHOICES: [u32; 3] = [24, 30, 60];
+pub(super) const FPS_CHOICES: [u32; 3] = [24, 30, 60];
 
 /// Build the application and run the main loop; returns the exit code
 /// passed to the process once the loop ends. `adw::Application::new`
@@ -51,7 +51,7 @@ pub(super) fn run() -> glib::ExitCode {
 /// Widgets + view state shared by the GTK callbacks. Wrapped in
 /// `Rc<RefCell>`; the event pump and tick hold weak refs so closing the
 /// window drops everything and stops their sources.
-struct Ui {
+pub(super) struct Ui {
     state: AppState,
     started_at: Option<Instant>,
     /// `Some(pid)` while another session (usually a CLI `start`) owns the
@@ -63,7 +63,13 @@ struct Ui {
     backend_error: Option<String>,
     /// Detail line under the status (error text or output path).
     detail: Option<String>,
+    /// Set by the close-while-recording prompt's "Stop recording and
+    /// exit" response; the next Completed/Failed event closes the window.
+    pending_quit: bool,
     ctl: Rc<GuiController>,
+    /// Weak so the Rc<Ui> held by window callbacks doesn't create a
+    /// window→Ui→window cycle.
+    window: glib::WeakRef<adw::ApplicationWindow>,
     recent: RecentRecordings,
     target_row: adw::ComboRow,
     output_row: adw::ComboRow,
@@ -75,7 +81,7 @@ struct Ui {
     output_label: gtk::Label,
 }
 
-fn combo(title: &str, items: &[&str]) -> adw::ComboRow {
+pub(super) fn combo(title: &str, items: &[&str]) -> adw::ComboRow {
     adw::ComboRow::builder()
         .title(title)
         .model(&gtk::StringList::new(items))
@@ -116,6 +122,44 @@ impl Ui {
                 self.recent.refresh();
             }
         }
+        self.refresh();
+
+        // "Stop recording and exit" armed `pending_quit`; the first
+        // quiescent event closes the window (close-request sees Idle-ish
+        // state and proceeds, tearing down window → Ui → controller →
+        // worker, then the app exits with no windows). Idle counts too:
+        // a quit-flag-aborted slurp lands there, not on Completed/Failed.
+        if self.pending_quit
+            && matches!(
+                self.state,
+                AppState::Idle | AppState::Completed(_) | AppState::Failed(_)
+            )
+        {
+            if let Some(w) = self.window.upgrade() {
+                w.close();
+            }
+        }
+    }
+
+    /// Mirror a persisted `Settings` change into the main window:
+    /// selector rows and the recent-list directory. Called by the
+    /// settings dialog after every successful change.
+    pub(super) fn apply_settings(&mut self, s: &settings::Settings) {
+        self.target_row.set_selected(match s.default_target {
+            Target::Display => 0,
+            Target::Region => 1,
+        });
+        self.fps_row.set_selected(
+            FPS_CHOICES
+                .iter()
+                .position(|f| *f == s.default_fps)
+                .unwrap_or(1) as u32,
+        );
+        self.quality_row.set_selected(match s.quality {
+            Quality::Standard => 0,
+            Quality::High => 1,
+        });
+        self.recent.set_dir(expand_tilde(&s.output_directory));
         self.refresh();
     }
 
@@ -217,7 +261,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let backend_error = check_preferred_backend(&settings).err();
 
     let (tx_events, rx_events) = async_channel::unbounded::<UiEvent>();
-    let ctl = Rc::new(GuiController::spawn(settings.clone(), tx_events));
+    let ctl = Rc::new(GuiController::spawn(tx_events));
     // `niri-recorder stop` SIGINTs this process (it owns the pidfile);
     // route the signal to the worker's Stop path, same as the CLI's flag.
     let cmd_tx = ctl.command_sender();
@@ -307,11 +351,9 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     content.append(&recent.widget);
 
     let header = adw::HeaderBar::new();
-    // Settings dialog lands in Task 4; the button is a placeholder until then.
     let settings_btn = gtk::Button::builder()
         .icon_name("emblem-system-symbolic")
         .tooltip_text("Settings")
-        .sensitive(false)
         .build();
     header.pack_end(&settings_btn);
 
@@ -338,7 +380,9 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         backend_ready: false,
         backend_error,
         detail: None,
+        pending_quit: false,
         ctl,
+        window: window.downgrade(),
         recent,
         actions,
         target_row,
@@ -391,6 +435,61 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
                 ui.detail = None;
                 ui.ctl.request_start(target, output, fps, quality);
             }
+        });
+    }
+
+    // Settings dialog over the main window.
+    {
+        let ui = Rc::clone(&ui);
+        let window = window.clone();
+        settings_btn.connect_clicked(move |_| {
+            super::settings::present(&window, &ui);
+        });
+    }
+
+    // Close-while-recording: a busy recorder can't die mid-capture (the
+    // .part must finalize), so veto the close and confirm. Cancel keeps
+    // window + recording; "Stop recording and exit" requests Stop and
+    // arms pending_quit so the next terminal event closes for real.
+    // The quit flag also aborts a pending slurp so exit can't deadlock
+    // on a stuck region selection.
+    let close_prompt_open = Rc::new(Cell::new(false));
+    {
+        let ui = Rc::clone(&ui);
+        window.connect_close_request(move |window| {
+            let busy = matches!(
+                ui.borrow().state,
+                AppState::SelectingRegion
+                    | AppState::Starting
+                    | AppState::Recording { .. }
+                    | AppState::Stopping { .. }
+            );
+            if !busy || close_prompt_open.get() {
+                return glib::Propagation::Proceed;
+            }
+            close_prompt_open.set(true);
+            let dialog = adw::AlertDialog::builder()
+                .heading("Recording in progress")
+                .body("A recording is still active.")
+                .build();
+            dialog.add_responses(&[("cancel", "Cancel"), ("stop", "Stop recording and exit")]);
+            dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+            dialog.set_close_response("cancel");
+            dialog.set_default_response(Some("cancel"));
+            let ui = Rc::clone(&ui);
+            let open = Rc::clone(&close_prompt_open);
+            dialog.connect_response(None, move |_, response| {
+                open.set(false);
+                if response != "stop" {
+                    return;
+                }
+                let mut ui = ui.borrow_mut();
+                ui.ctl.quit_flag().store(true, Ordering::SeqCst);
+                ui.pending_quit = true;
+                ui.ctl.request_stop();
+            });
+            dialog.present(Some(window));
+            glib::Propagation::Stop
         });
     }
 

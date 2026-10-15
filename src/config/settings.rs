@@ -111,3 +111,38 @@ pub fn expand_tilde(p: &str) -> PathBuf {
     }
     PathBuf::from(p)
 }
+
+/// Inverse of [`expand_tilde`]: collapse a path under the user's home
+/// directory to `~/…` for storage in `config.toml`. Paths outside home
+/// pass through unchanged.
+pub fn collapse_tilde(p: &std::path::Path) -> String {
+    if let Some(base) = directories::BaseDirs::new() {
+        if let Ok(rest) = p.strip_prefix(base.home_dir()) {
+            return if rest.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rest.display())
+            };
+        }
+    }
+    p.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tilde_roundtrip() {
+        let home = directories::BaseDirs::new()
+            .unwrap()
+            .home_dir()
+            .to_path_buf();
+        let collapsed = super::collapse_tilde(&home.join("Videos/x"));
+        assert_eq!(collapsed, "~/Videos/x");
+        assert_eq!(super::expand_tilde(&collapsed), home.join("Videos/x"));
+        assert_eq!(
+            super::collapse_tilde(std::path::Path::new("/tmp/y")),
+            "/tmp/y"
+        );
+        assert_eq!(super::collapse_tilde(&home), "~");
+    }
+}

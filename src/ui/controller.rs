@@ -13,7 +13,7 @@ use crate::app::state::AppState;
 use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
 use crate::capture::process::is_zombie;
-use crate::config::settings::{Quality, Settings, Target};
+use crate::config::settings::{self, Quality, Target};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
 use std::path::PathBuf;
@@ -66,15 +66,16 @@ pub struct GuiController {
 }
 
 impl GuiController {
-    /// Spawn the worker thread. `settings` is a snapshot; per-Start
-    /// overrides (fps/quality) ride on the command. `tx_events` must be
-    /// drained on the GTK main thread.
-    pub fn spawn(settings: Settings, tx_events: async_channel::Sender<UiEvent>) -> Self {
+    /// Spawn the worker thread. `tx_events` must be drained on the GTK
+    /// main thread. Settings are re-loaded from disk on every Start so a
+    /// settings-dialog change (e.g. output directory) applies to the
+    /// next recording without restarting the app.
+    pub fn spawn(tx_events: async_channel::Sender<UiEvent>) -> Self {
         let (tx, rx) = mpsc::channel::<UiCommand>();
         let quit = Arc::new(AtomicBool::new(false));
         let worker = thread::spawn({
             let quit = Arc::clone(&quit);
-            move || worker_loop(rx, tx_events, settings, quit)
+            move || worker_loop(rx, tx_events, quit)
         });
         Self {
             tx,
@@ -142,7 +143,6 @@ fn emit(tx: &async_channel::Sender<UiEvent>, ev: UiEvent) {
 fn worker_loop(
     rx: mpsc::Receiver<UiCommand>,
     tx: async_channel::Sender<UiEvent>,
-    settings: Settings,
     quit: Arc<AtomicBool>,
 ) {
     let mut recorder: Option<Recorder<WfRecorder>> = None;
@@ -187,7 +187,7 @@ fn worker_loop(
                 }
                 recorder = start_recording(
                     &tx,
-                    &settings,
+                    &settings::load(),
                     &quit,
                     &mut we_own_pidfile,
                     target,
@@ -225,14 +225,15 @@ fn worker_loop(
 }
 
 /// Mirror of `cli::commands::start`: pidfile claim → backend detect →
-/// Recorder::start. Settings fps/quality are baked into a fresh Recorder
-/// per start so the dropdowns' values take effect.
+/// Recorder::start. `settings` is loaded fresh per Start (see
+/// `worker_loop`); fps/quality overrides are baked into a fresh Recorder
+/// so the dropdowns' values take effect.
 // Arg list mirrors UiCommand::Start + shared worker state; a param
 // struct would just rename the same eight values.
 #[allow(clippy::too_many_arguments)]
 fn start_recording(
     tx: &async_channel::Sender<UiEvent>,
-    settings: &Settings,
+    settings: &crate::config::settings::Settings,
     quit: &Arc<AtomicBool>,
     we_own_pidfile: &mut bool,
     target: Target,
