@@ -10,6 +10,7 @@
 use crate::app::controller::Recorder;
 use crate::app::pidfile::{clear_pidfile, read_pidfile, write_pidfile};
 use crate::app::state::AppState;
+use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
 use crate::capture::process::is_zombie;
 use crate::config::settings::{Quality, Settings, Target};
@@ -42,6 +43,11 @@ pub enum UiCommand {
 /// `spawn_future_local` loop on the main thread.
 #[derive(Debug)]
 pub enum UiEvent {
+    /// Backend probe finished on the worker; capabilities for the
+    /// display dropdown. Emitted once at startup, off the main thread.
+    BackendReady(crate::capture::capabilities::CaptureCapabilities),
+    /// Backend probe failed — recording can't start.
+    BackendError(String),
     StateChanged(AppState),
     /// Recording is live; carries the in-flight `.part` path.
     RecordingStarted {
@@ -121,10 +127,18 @@ impl Drop for GuiController {
     }
 }
 
+/// Remove the pidfile only when this worker wrote it — a foreign
+/// recorder's claim must survive GUI exit (the CLI can still stop it).
+fn release_pidfile(own: &mut bool) {
+    if *own {
+        clear_pidfile();
+        *own = false;
+    }
+}
+
 fn emit(tx: &async_channel::Sender<UiEvent>, ev: UiEvent) {
     let _ = tx.send_blocking(ev);
 }
-
 fn worker_loop(
     rx: mpsc::Receiver<UiCommand>,
     tx: async_channel::Sender<UiEvent>,
@@ -132,6 +146,16 @@ fn worker_loop(
     quit: Arc<AtomicBool>,
 ) {
     let mut recorder: Option<Recorder<WfRecorder>> = None;
+    let mut we_own_pidfile = false;
+    // Backend probe (subprocess spawns: wf-recorder --help, slurp --help,
+    // niri msg outputs) runs here, off the GTK main thread.
+    match WfRecorder::detect() {
+        Ok(b) => match b.capabilities() {
+            Ok(c) => emit(&tx, UiEvent::BackendReady(c)),
+            Err(e) => emit(&tx, UiEvent::BackendError(e.to_string())),
+        },
+        Err(e) => emit(&tx, UiEvent::BackendError(e.to_string())),
+    }
     // ponytail: recording polls child liveness every 100ms; Idle blocks.
     loop {
         let cmd = if let Some(rec) = &recorder {
@@ -161,11 +185,20 @@ fn worker_loop(
                 if recorder.is_some() {
                     continue; // transitional state — UI already gates this
                 }
-                recorder = start_recording(&tx, &settings, &quit, target, output, fps, quality);
+                recorder = start_recording(
+                    &tx,
+                    &settings,
+                    &quit,
+                    &mut we_own_pidfile,
+                    target,
+                    output,
+                    fps,
+                    quality,
+                );
             }
             Some(UiCommand::Stop) => {
                 if let Some(mut rec) = recorder.take() {
-                    stop_recording(&tx, &mut rec, false);
+                    stop_recording(&tx, &mut rec, false, &mut we_own_pidfile);
                 }
             }
             Some(UiCommand::Quit) => break,
@@ -178,26 +211,30 @@ fn worker_loop(
                 };
                 if is_zombie(*pid) || kill(Pid::from_raw(*pid as i32), None).is_err() {
                     let mut rec = recorder.take().expect("checked above");
-                    stop_recording(&tx, &mut rec, true);
+                    stop_recording(&tx, &mut rec, true, &mut we_own_pidfile);
                 }
             }
         }
     }
     if let Some(mut rec) = recorder.take() {
         if matches!(rec.state(), AppState::Recording { .. }) {
-            stop_recording(&tx, &mut rec, false);
+            stop_recording(&tx, &mut rec, false, &mut we_own_pidfile);
         }
     }
-    clear_pidfile();
+    release_pidfile(&mut we_own_pidfile);
 }
 
 /// Mirror of `cli::commands::start`: pidfile claim → backend detect →
 /// Recorder::start. Settings fps/quality are baked into a fresh Recorder
 /// per start so the dropdowns' values take effect.
+// Arg list mirrors UiCommand::Start + shared worker state; a param
+// struct would just rename the same eight values.
+#[allow(clippy::too_many_arguments)]
 fn start_recording(
     tx: &async_channel::Sender<UiEvent>,
     settings: &Settings,
     quit: &Arc<AtomicBool>,
+    we_own_pidfile: &mut bool,
     target: Target,
     output: Option<String>,
     fps: u32,
@@ -214,10 +251,11 @@ fn start_recording(
         emit(tx, UiEvent::Failed(format!("cannot claim recorder: {e}")));
         return None;
     }
+    *we_own_pidfile = true;
     let backend = match WfRecorder::detect() {
         Ok(b) => b,
         Err(e) => {
-            clear_pidfile();
+            release_pidfile(we_own_pidfile);
             emit(tx, UiEvent::Failed(e.to_string()));
             return None;
         }
@@ -253,14 +291,14 @@ fn start_recording(
                 }
                 // Cancelled region selection lands back on Idle.
                 _ => {
-                    clear_pidfile();
+                    release_pidfile(we_own_pidfile);
                     emit(tx, UiEvent::StateChanged(state));
                     None
                 }
             }
         }
         Err(e) => {
-            clear_pidfile();
+            release_pidfile(we_own_pidfile);
             emit(tx, UiEvent::Failed(e.to_string()));
             None
         }
@@ -274,24 +312,25 @@ fn stop_recording(
     tx: &async_channel::Sender<UiEvent>,
     rec: &mut Recorder<WfRecorder>,
     child_died: bool,
+    we_own_pidfile: &mut bool,
 ) {
     if let AppState::Recording { pid } = rec.state() {
         emit(tx, UiEvent::StateChanged(AppState::Stopping { pid: *pid }));
     }
     match (rec.stop(), child_died) {
         (Ok(path), false) => {
-            clear_pidfile();
+            release_pidfile(we_own_pidfile);
             emit(tx, UiEvent::Completed(path));
         }
         (Ok(path), true) => {
-            clear_pidfile();
+            release_pidfile(we_own_pidfile);
             emit(
                 tx,
                 UiEvent::Failed(format!("capture ended early; saved {}", path.display())),
             );
         }
         (Err(e), _) => {
-            clear_pidfile();
+            release_pidfile(we_own_pidfile);
             emit(tx, UiEvent::Failed(format!("stop failed: {e}")));
         }
     }

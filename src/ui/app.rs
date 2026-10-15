@@ -12,8 +12,6 @@ use super::controller::{GuiController, UiCommand, UiEvent};
 use super::format::{format_elapsed, outputs_model, state_label};
 use crate::app::pidfile::read_pidfile;
 use crate::app::state::AppState;
-use crate::capture::backend::CaptureBackend;
-use crate::capture::backends::wf_recorder::WfRecorder;
 use crate::cli::commands::check_preferred_backend;
 use crate::config::settings::{self, Quality, Target};
 use gtk4::{self as gtk, gio, glib};
@@ -58,7 +56,9 @@ struct Ui {
     /// `Some(pid)` while another session (usually a CLI `start`) owns the
     /// pidfile — Start is disabled and the status line says who controls.
     external_pid: Option<u32>,
-    /// Backend/preferred-backend problem detected at startup.
+    /// Backend probe completed on the worker (dropdowns populated).
+    backend_ready: bool,
+    /// Backend/preferred-backend problem — blocks Start.
     backend_error: Option<String>,
     /// Detail line under the status (error text or output path).
     detail: Option<String>,
@@ -82,6 +82,13 @@ fn combo(title: &str, items: &[&str]) -> adw::ComboRow {
 impl Ui {
     fn on_event(&mut self, ev: UiEvent) {
         match ev {
+            UiEvent::BackendReady(caps) => {
+                self.backend_ready = true;
+                self.populate_outputs(&outputs_model(&caps.outputs));
+            }
+            UiEvent::BackendError(msg) => {
+                self.backend_error = Some(msg);
+            }
             UiEvent::StateChanged(s) => {
                 self.state = s;
                 self.detail = None;
@@ -114,9 +121,20 @@ impl Ui {
         );
         let recording = matches!(self.state, AppState::Recording { .. });
         let is_region = self.target_row.selected() == 1;
-        let can_start = idleish && self.backend_error.is_none() && self.external_pid.is_none();
+        let can_start = idleish
+            && self.backend_ready
+            && self.backend_error.is_none()
+            && self.external_pid.is_none();
 
-        for row in [&self.target_row, &self.output_row] {
+        // All selectors insensitive during transitions (SelectingRegion /
+        // Starting / Recording / Stopping); display additionally only
+        // meaningful for Full display.
+        for row in [
+            &self.target_row,
+            &self.output_row,
+            &self.fps_row,
+            &self.quality_row,
+        ] {
             row.set_sensitive(idleish);
         }
         self.output_row.set_sensitive(idleish && !is_region);
@@ -131,6 +149,8 @@ impl Ui {
             err.clone()
         } else if let Some(pid) = self.external_pid {
             format!("recording (pid {pid}) — controlled by another session")
+        } else if !self.backend_ready {
+            "Checking backend…".to_string()
         } else {
             match (&self.state, self.started_at) {
                 (AppState::Recording { .. }, Some(t)) => {
@@ -146,6 +166,14 @@ impl Ui {
         self.status.set_label(&status);
         self.output_label
             .set_label(self.detail.as_deref().unwrap_or(""));
+    }
+
+    /// Swap the display dropdown's model after the worker's backend probe.
+    fn populate_outputs(&mut self, names: &[String]) {
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.output_row
+            .set_model(Some(&gtk::StringList::new(&refs)));
+        self.output_row.set_selected(0);
     }
 
     /// The dropdown selections, resolved to command arguments.
@@ -174,18 +202,10 @@ impl Ui {
 
 fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let settings = settings::load();
-    // Same gate as `cli::commands::start` before the widgets go up; one
-    // probe doubles as the backend check and the capabilities source.
-    let detected = WfRecorder::detect();
-    let backend_error = check_preferred_backend(&settings)
-        .err()
-        .or_else(|| detected.as_ref().err().map(|e| e.to_string()));
-    let caps = detected
-        .as_ref()
-        .ok()
-        .and_then(|b| b.capabilities().ok())
-        .unwrap_or_default();
-    let outputs = outputs_model(&caps.outputs);
+    // Pure config check on the main thread; the subprocess probe
+    // (wf-recorder/slurp/niri) runs on the worker and arrives as
+    // BackendReady/BackendError — the window never blocks on niri IPC.
+    let backend_error = check_preferred_backend(&settings).err();
 
     let (tx_events, rx_events) = async_channel::unbounded::<UiEvent>();
     let ctl = Rc::new(GuiController::spawn(settings.clone(), tx_events));
@@ -206,8 +226,8 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         Target::Display => 0,
         Target::Region => 1,
     });
-    let output_names: Vec<&str> = outputs.iter().map(String::as_str).collect();
-    let output_row = combo("Display", &output_names);
+    // Empty until the worker's BackendReady event populates it.
+    let output_row = combo("Display", &[]);
     let fps_names: Vec<String> = FPS_CHOICES.iter().map(u32::to_string).collect();
     let fps_refs: Vec<&str> = fps_names.iter().map(String::as_str).collect();
     let fps_row = combo("Frame rate", &fps_refs);
@@ -286,6 +306,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         state: AppState::Idle,
         started_at: None,
         external_pid: read_pidfile().map(|e| e.pid),
+        backend_ready: false,
         backend_error,
         detail: None,
         ctl,
@@ -335,8 +356,12 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             glib::ControlFlow::Break,
             move || {
                 let mut ui = ui.borrow_mut();
-                // Another session may claim the pidfile while we're idle.
-                ui.external_pid = if matches!(ui.state, AppState::Idle) {
+                // Another session may claim the pidfile in any startable
+                // state (Idle/Completed/Failed), not just Idle.
+                ui.external_pid = if matches!(
+                    ui.state,
+                    AppState::Idle | AppState::Completed(_) | AppState::Failed(_)
+                ) {
                     read_pidfile().map(|e| e.pid)
                 } else {
                     None
