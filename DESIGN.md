@@ -9,9 +9,9 @@ code wins — file an issue.
 
 ## Module map
 
-```text
 main.rs ──► cli (clap: start/stop/status/diagnostics)
-              │
+              │ bare `niri-recorder`
+              ├──► ui (GTK4/libadwaita window; worker owns Recorder)
               ▼
 app::controller::Recorder<B: CaptureBackend>
    • drives app::state (explicit AppState/Event machine)
@@ -106,7 +106,7 @@ kept but the CLI reports failure (exit 3).
 ## CLI surface
 
 ```text
-niri-recorder            bare → help on stdout, exit 0
+niri-recorder            bare → GTK4/libadwaita GUI (exit 1 headless)
   start [--target display|region] [--output NAME]   foreground recorder
   stop      SIGINT via pidfile; "not recording" → exit 1
   status    "recording pid=N" | "idle"; always exit 0

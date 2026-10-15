@@ -25,6 +25,9 @@ pub struct Settings {
     pub default_fps: u32,
     pub quality: Quality,
     pub preferred_backend: String,
+    /// FR-09: last display the user recorded. A name absent from the
+    /// current outputs falls back to the first (see `ui::format::select_index`).
+    pub last_output: Option<String>,
 }
 
 impl Default for Settings {
@@ -35,6 +38,7 @@ impl Default for Settings {
             default_fps: 30,
             quality: Quality::Standard,
             preferred_backend: "auto".into(),
+            last_output: None,
         }
     }
 }
@@ -144,5 +148,18 @@ mod tests {
             "/tmp/y"
         );
         assert_eq!(super::collapse_tilde(&home), "~");
+    }
+    #[test]
+    fn last_output_roundtrip_and_default() {
+        let s = super::Settings {
+            last_output: Some("DP-3".into()),
+            ..Default::default()
+        };
+        let parsed = super::Settings::from_toml_str(&toml::to_string(&s).unwrap()).unwrap();
+        assert_eq!(parsed.last_output.as_deref(), Some("DP-3"));
+        // A pre-FR-09 config.toml (no last_output key) still parses.
+        let old = super::Settings::from_toml_str("default_fps = 60").unwrap();
+        assert_eq!(old.last_output, None);
+        assert_eq!(old.default_fps, 60);
     }
 }

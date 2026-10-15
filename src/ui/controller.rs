@@ -13,6 +13,7 @@ use crate::app::state::AppState;
 use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
 use crate::capture::process::is_zombie;
+use crate::cli::commands::check_preferred_backend;
 use crate::config::settings::{self, Quality, Target};
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -121,6 +122,10 @@ impl Drop for GuiController {
     /// close-while-recording prompt lands in Task 4 and normally keeps
     /// this path unreachable.
     fn drop(&mut self) {
+        // Arm the quit flag first: a worker parked in `child.wait()` on
+        // slurp (Region start that never saw StateChanged reach the UI,
+        // so the close-request veto stayed off) only unblocks via this.
+        self.quit.store(true, Ordering::SeqCst);
         let _ = self.tx.send(UiCommand::Quit);
         if let Some(h) = self.worker.take() {
             let _ = h.join();
@@ -156,23 +161,21 @@ fn worker_loop(
         },
         Err(e) => emit(&tx, UiEvent::BackendError(e.to_string())),
     }
-    // ponytail: recording polls child liveness every 100ms; Idle blocks.
+    // ponytail: a recording polls child liveness every 100ms; every
+    // other state blocks on a command.
     loop {
-        let cmd = if let Some(rec) = &recorder {
-            let timeout = match rec.state() {
-                AppState::Recording { .. } => Duration::from_millis(100),
-                _ => Duration::MAX,
-            };
-            match rx.recv_timeout(timeout) {
-                Ok(c) => Some(c),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        let cmd = match &recorder {
+            Some(rec) if matches!(rec.state(), AppState::Recording { .. }) => {
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(c) => Some(c),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             }
-        } else {
-            match rx.recv() {
+            _ => match rx.recv() {
                 Ok(c) => Some(c),
                 Err(mpsc::RecvError) => break,
-            }
+            },
         };
 
         match cmd {
@@ -241,6 +244,12 @@ fn start_recording(
     fps: u32,
     quality: Quality,
 ) -> Option<Recorder<WfRecorder>> {
+    // Same preferred_backend validation the CLI runs (cli::commands::start)
+    // — catches a config.toml the UI's startup check predates.
+    if let Err(msg) = check_preferred_backend(settings) {
+        emit(tx, UiEvent::Failed(msg));
+        return None;
+    }
     if let Some(e) = read_pidfile() {
         emit(
             tx,

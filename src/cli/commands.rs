@@ -2,7 +2,8 @@
 //! their message and call `std::process::exit` — `run` never returns.
 //!
 //! `stop`/`status` operate on the pidfile alone: the recording process is
-//! the `start` invocation itself, signalled with SIGINT.
+//! whichever session claimed it — a `start` invocation or the GUI —
+//! signalled with SIGINT.
 
 use super::TargetArg;
 use crate::app::controller::Recorder;

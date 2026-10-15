@@ -31,4 +31,6 @@ install: build
 uninstall:
 	rm -f $(PREFIX)/share/applications/io.github.niri_recorder.desktop
 	rm -f $(PREFIX)/share/icons/hicolor/scalable/apps/niri-recorder.svg
+	-update-desktop-database $(PREFIX)/share/applications 2>/dev/null || true
+	-gtk-update-icon-cache $(PREFIX)/share/icons/hicolor 2>/dev/null || true
 	cargo uninstall niri-recorder || true

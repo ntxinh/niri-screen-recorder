@@ -37,6 +37,14 @@ pub fn outputs_model(outputs: &[String]) -> Vec<String> {
     v
 }
 
+/// FR-09: index of `last_output` in the (sorted, deduped) model, else 0.
+/// A stale last_output (display gone) falls back to the first entry.
+pub fn select_index(outputs: &[String], last_output: Option<&str>) -> u32 {
+    last_output
+        .and_then(|name| outputs.iter().position(|o| o == name))
+        .unwrap_or(0) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +82,14 @@ mod tests {
         let input = vec!["DP-3".to_string(), "eDP-1".to_string(), "DP-3".to_string()];
         assert_eq!(outputs_model(&input), vec!["DP-3", "eDP-1"]);
         assert!(outputs_model(&[]).is_empty());
+    }
+
+    #[test]
+    fn select_index_picks_last_output_or_zero() {
+        let outputs = vec!["DP-3".to_string(), "eDP-1".to_string()];
+        assert_eq!(select_index(&outputs, Some("eDP-1")), 1);
+        assert_eq!(select_index(&outputs, Some("gone")), 0); // stale
+        assert_eq!(select_index(&outputs, None), 0);
+        assert_eq!(select_index(&[], Some("eDP-1")), 0);
     }
 }

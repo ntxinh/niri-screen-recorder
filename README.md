@@ -13,9 +13,9 @@ command line below. See `docs/ROADMAP.md` for phase status.
 | Requirement | Status |
 |---|---|
 | Fedora 44, native Wayland session | Verified on target |
-| Niri compositor (single output DP-3, 1920×1080@60) | Verified on target |
+| Niri compositor (dual output DP-3 + eDP-1, 1920×1080@60) | Verified on target |
 | Intel CometLake-H UHD (iHD) | Verified; software encode only |
-| Multi-monitor | Implemented (`--output`), manual verification pending |
+| Multi-monitor | Verified (`--output` on DP-3 + eDP-1, per-display capture) |
 | Other compositors | Untested; do not assume Sway/Hyprland results apply |
 
 See `docs/WAYLAND-NIRI-COMPATIBILITY.md` for the full verified/pending
@@ -36,8 +36,7 @@ Known limitations: variable frame rate output (wlr-screencopy damage
 tracking), no hardware encoding (VAAPI broken for this on CometLake iHD),
 `--output NAME` is not validated against detected outputs (a bad name
 surfaces later as a wf-recorder exit — `capture ended early` / `stop
-failed`, exit 3), region selection on
-multi-monitor layouts untested.
+failed`, exit 3); slurp region geometry across two outputs unverified.
 
 ## Install dependencies (Fedora 44, verified package names)
 
@@ -149,14 +148,14 @@ Error-by-error guidance is in `docs/TROUBLESHOOTING.md`.
 
 ## Project layout
 
-`src/cli` (clap front-end) → `src/app` (`Recorder` controller, state
+`src/ui` (GTK4/libadwaita window — bare `niri-recorder`) → `src/cli`
+(clap front-end) → `src/app` (`Recorder` controller, state
 machine, pidfile) → `src/capture` (`CaptureBackend` trait, `wf-recorder`
 backend, managed subprocess) → `src/files` (output naming/finalization),
 `src/config` (settings). Full picture in `DESIGN.md`.
 
 ## Roadmap
 
-Plan A (this CLI) is implemented; Plan B adds the GTK4/libadwaita GUI
-(spec §8), then reliability/multi-monitor validation, packaging, and
-desktop integration. See `docs/ROADMAP.md` and
+Plan A (CLI) and Plan B (GTK4/libadwaita GUI, packaging, multi-monitor
+validation) are implemented. See `docs/ROADMAP.md` and
 `docs/REQUIREMENTS.md` for per-requirement status.

@@ -9,7 +9,7 @@
 //! default — no manual theme code.
 
 use super::controller::{GuiController, UiCommand, UiEvent};
-use super::format::{format_elapsed, outputs_model, state_label};
+use super::format::{format_elapsed, outputs_model, select_index, state_label};
 use super::recordings::{open_folder, play_file, RecentRecordings};
 use crate::app::pidfile::read_pidfile;
 use crate::app::state::AppState;
@@ -67,6 +67,9 @@ pub(super) struct Ui {
     /// Set by the close-while-recording prompt's "Stop recording and
     /// exit" response; the next Completed/Failed event closes the window.
     pending_quit: bool,
+    /// FR-09: last recorded display — `populate_outputs` selects it when
+    /// still present; updated on every Start with an explicit output.
+    last_output: Option<String>,
     /// The open settings dialog, if any — a second gear-click re-presents
     /// it instead of stacking a duplicate.
     pub(super) settings_dialog: Option<adw::PreferencesDialog>,
@@ -183,6 +186,10 @@ impl Ui {
             Quality::High => 1,
         });
         self.recent.set_dir(expand_tilde(&s.output_directory));
+        // A config.toml edit can fix (or break) preferred_backend
+        // mid-session — re-evaluate so Start un/re-blocks correctly.
+        self.backend_error = check_preferred_backend(s).err();
+        self.last_output.clone_from(&s.last_output);
         self.refresh();
     }
 
@@ -212,10 +219,14 @@ impl Ui {
             row.set_sensitive(idleish);
         }
         self.output_row.set_sensitive(idleish && !is_region);
-        self.primary.set_label(if recording {
-            "Stop Recording"
-        } else {
-            "Start Recording"
+        self.primary.set_label(match &self.state {
+            AppState::Recording { .. } => "Stop Recording",
+            // Busy states: Start is insensitive, so don't show a label
+            // that reads like it became clickable again.
+            AppState::Stopping { .. } => "Stopping…",
+            AppState::SelectingRegion => "Selecting region…",
+            AppState::Starting => "Starting…",
+            _ => "Start Recording",
         });
         self.primary.set_sensitive(can_start || recording);
 
@@ -249,7 +260,8 @@ impl Ui {
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         self.output_row
             .set_model(Some(&gtk::StringList::new(&refs)));
-        self.output_row.set_selected(0);
+        self.output_row
+            .set_selected(select_index(names, self.last_output.as_deref()));
     }
 
     /// The dropdown selections, resolved to command arguments.
@@ -418,6 +430,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         backend_ready: false,
         backend_error,
         detail: None,
+        last_output: settings.last_output.clone(),
         pending_quit: false,
         settings_dialog: None,
         ctl,
@@ -477,6 +490,16 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             } else {
                 let (target, output, fps, quality) = ui.selections();
                 ui.detail = None;
+                if let Some(name) = &output {
+                    // FR-09: remember the recorded display; a stale name
+                    // falls back to index 0 on next launch.
+                    ui.last_output = Some(name.clone());
+                    let mut s = settings::load();
+                    s.last_output = Some(name.clone());
+                    if let Err(e) = settings::save(&s) {
+                        eprintln!("niri-recorder: cannot save settings: {e}");
+                    }
+                }
                 ui.ctl.request_start(target, output, fps, quality);
             }
         });
