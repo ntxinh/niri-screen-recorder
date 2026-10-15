@@ -52,12 +52,28 @@ pub fn list_recent(dir: &Path, limit: usize) -> Vec<PathBuf> {
     files.into_iter().map(|(p, _)| p).collect()
 }
 
+/// Does `s`'s first 19 bytes match `YYYY-MM-DD_HH-MM-SS`? All-ASCII shape
+/// check — guarantees the byte slices below sit on char boundaries.
+fn is_timestamp(s: &str) -> bool {
+    const DIGITS: [usize; 14] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    let b = s.as_bytes();
+    if b.len() < 19 {
+        return false;
+    }
+    DIGITS.iter().all(|&i| b[i].is_ascii_digit())
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'_'
+        && b[13] == b'-'
+        && b[16] == b'-'
+}
+
 /// Row timestamp: parse `screen-recording-YYYY-MM-DD_HH-MM-SS[…]` back into
 /// `YYYY-MM-DD HH:MM:SS`; renamed files fall back to mtime, unreadable
 /// metadata to `None`.
 fn display_time(p: &Path, meta: Option<&fs::Metadata>) -> Option<String> {
     if let Some(rest) = p.file_name()?.to_str()?.strip_prefix(PREFIX) {
-        if rest.len() >= 19 && rest.as_bytes()[10] == b'_' {
+        if is_timestamp(rest) {
             return Some(format!(
                 "{} {}:{}:{}",
                 &rest[..10],
@@ -256,9 +272,32 @@ mod tests {
     #[test]
     fn timestamp_falls_back_to_mtime() {
         let dir = tempfile::tempdir().unwrap();
-        let p = touch(dir.path(), "screen-recording-renamed.mp4", 10);
+        for name in [
+            "screen-recording-renamed.mp4",
+            // Timestamp-shaped but garbage — must not render as text.
+            "screen-recording-abcdefghij_kl-mn-op.mp4",
+        ] {
+            let p = touch(dir.path(), name, 10);
+            let meta = fs::metadata(&p).unwrap();
+            assert!(
+                display_time(&p, Some(&meta)).is_some(),
+                "{name} should fall back to mtime"
+            );
+            assert_eq!(display_time(&p, None), None);
+        }
+    }
+
+    #[test]
+    fn non_ascii_stem_falls_back_without_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        // Multi-byte char inside the stem: byte-slicing `[11..13]` used to
+        // panic off char boundaries.
+        let p = touch(
+            dir.path(),
+            "screen-recording-2026-10-15_2\u{20ac}34567.mp4",
+            10,
+        );
         let meta = fs::metadata(&p).unwrap();
         assert!(display_time(&p, Some(&meta)).is_some());
-        assert_eq!(display_time(&p, None), None);
     }
 }

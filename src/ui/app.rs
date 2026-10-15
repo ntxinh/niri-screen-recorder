@@ -112,6 +112,8 @@ impl Ui {
                 self.started_at = None;
                 self.state = AppState::Failed(msg.clone());
                 self.detail = Some(msg);
+                // An early-ended capture may still have finalized a file.
+                self.recent.refresh();
             }
         }
         self.refresh();
