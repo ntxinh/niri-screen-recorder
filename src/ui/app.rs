@@ -10,10 +10,11 @@
 
 use super::controller::{GuiController, UiCommand, UiEvent};
 use super::format::{format_elapsed, outputs_model, state_label};
+use super::recordings::{open_folder, play_file, RecentRecordings};
 use crate::app::pidfile::read_pidfile;
 use crate::app::state::AppState;
 use crate::cli::commands::check_preferred_backend;
-use crate::config::settings::{self, Quality, Target};
+use crate::config::settings::{self, expand_tilde, Quality, Target};
 use gtk4::{self as gtk, gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
@@ -63,11 +64,13 @@ struct Ui {
     /// Detail line under the status (error text or output path).
     detail: Option<String>,
     ctl: Rc<GuiController>,
+    recent: RecentRecordings,
     target_row: adw::ComboRow,
     output_row: adw::ComboRow,
     fps_row: adw::ComboRow,
     quality_row: adw::ComboRow,
     primary: gtk::Button,
+    actions: gtk::Box,
     status: gtk::Label,
     output_label: gtk::Label,
 }
@@ -102,6 +105,8 @@ impl Ui {
                 self.started_at = None;
                 self.state = AppState::Completed(path.clone());
                 self.detail = Some(path.display().to_string());
+                // The just-finalized file should appear at the top.
+                self.recent.refresh();
             }
             UiEvent::Failed(msg) => {
                 self.started_at = None;
@@ -166,6 +171,8 @@ impl Ui {
         self.status.set_label(&status);
         self.output_label
             .set_label(self.detail.as_deref().unwrap_or(""));
+        self.actions
+            .set_visible(matches!(self.state, AppState::Completed(_)));
     }
 
     /// Swap the display dropdown's model after the worker's backend probe.
@@ -268,6 +275,20 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         .wrap(true)
         .build();
 
+    // Completed-file actions — hidden until `AppState::Completed` (refresh).
+    let open_folder_btn = gtk::Button::builder().label("Open Folder").build();
+    let play_btn = gtk::Button::builder().label("Play").build();
+    let actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .halign(gtk::Align::Center)
+        .visible(false)
+        .build();
+    actions.append(&open_folder_btn);
+    actions.append(&play_btn);
+
+    let recent = RecentRecordings::new(expand_tilde(&settings.output_directory));
+
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
@@ -280,6 +301,8 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     content.append(&primary);
     content.append(&status);
     content.append(&output_label);
+    content.append(&actions);
+    content.append(&recent.widget);
 
     let header = adw::HeaderBar::new();
     // Settings dialog lands in Task 4; the button is a placeholder until then.
@@ -290,15 +313,19 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         .build();
     header.pack_end(&settings_btn);
 
+    let scroll = gtk::ScrolledWindow::builder()
+        .propagate_natural_height(true)
+        .child(&content)
+        .build();
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
-    view.set_content(Some(&content));
+    view.set_content(Some(&scroll));
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("niri-recorder")
         .default_width(420)
-        .default_height(340)
+        .default_height(480)
         .content(&view)
         .build();
 
@@ -310,6 +337,8 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         backend_error,
         detail: None,
         ctl,
+        recent,
+        actions,
         target_row,
         output_row,
         fps_row,
@@ -318,6 +347,24 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         status,
         output_label,
     }));
+
+    for (btn, action) in [
+        (
+            &open_folder_btn,
+            open_folder as fn(&std::path::Path, &gtk::Button),
+        ),
+        (&play_btn, |p: &std::path::Path, _: &gtk::Button| {
+            play_file(p)
+        }),
+    ] {
+        let ui = Rc::clone(&ui);
+        btn.connect_clicked(move |b| {
+            let ui = ui.borrow();
+            if let AppState::Completed(path) = &ui.state {
+                action(path, b);
+            }
+        });
+    }
 
     // --- wiring ---------------------------------------------------------
     // Changing target flips the display row's sensitivity via refresh.

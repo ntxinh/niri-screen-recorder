@@ -5,6 +5,7 @@
 mod app;
 pub(crate) mod controller;
 mod format;
+mod recordings;
 
 /// Run the GUI event loop. Returns the GTK exit code once the last
 /// window closes. With no usable display, prints an actionable error to
