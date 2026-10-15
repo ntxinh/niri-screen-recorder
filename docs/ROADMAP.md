@@ -15,23 +15,24 @@ Phases 0–2; Plan B is the GUI.
   abstraction, managed subprocess, display + region capture, stop/cancel,
   output naming + finalization, `status`/`diagnostics`, fake-child
   testing.
+- **Phase 3 — Minimal GUI** ✅ GTK4/libadwaita window over the `Recorder`
+  controller: capture mode, display selector, fps/quality settings,
+  start/stop, state + elapsed time, final-file actions,
+  exit-while-recording prompt, settings dialog, recent-recordings list.
+- **Phase 5 — Packaging and desktop integration** ✅ `make install` /
+  `make uninstall` (binary + desktop entry + icon to `~/.local`),
+  launcher verified, Niri keybinding examples in README. RPM skipped —
+  paths still stabilizing.
 
-## Next — Plan B
-
-- **Phase 3 — Minimal GUI** 🔜 GTK4/libadwaita window over the existing
-  `Recorder` controller: capture mode, display selector, fps/quality
-  settings, start/stop, state + elapsed time, final-file actions,
-  exit-while-recording prompt, recent-recordings list.
-
-## Remaining phases (spec §18)
+## Next
 
 - **Phase 4 — Reliability and multi-monitor validation**: run every
   pending item in `docs/WAYLAND-NIRI-COMPATIBILITY.md` on real
   multi-monitor hardware; disk-full and unexpected-exit hardening;
   no-audio validation; diagnostics polish.
-- **Phase 5 — Packaging and desktop integration**: install/remove docs,
-  desktop entry + icon, launcher test, Niri keybinding examples,
-  optional RPM once paths stabilize.
+
+## Remaining phases (spec §18)
+
 - **Phase 6 — Optional enhancements** (post-MVP only): DMS integration,
   configurable shortcuts, background daemon with robust CLI control,
   recording history with thumbnails, opt-in cleanup rules, countdown and

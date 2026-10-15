@@ -4,9 +4,9 @@ Local-first screen recorder for Wayland/Niri on Fedora. Captures a full
 output or a selected region to MP4/H.264 using `wf-recorder` — no audio,
 no network, no portal prompts.
 
-**Status: CLI-only MVP (Plan A).** The graphical application is Plan B
-(see `docs/ROADMAP.md`); every feature below is driven from the command
-line.
+**Status: GUI (Plan B).** A bare `niri-recorder` launches the
+GTK4/libadwaita window; every feature is also available from the
+command line below. See `docs/ROADMAP.md` for phase status.
 
 ## Supported environment
 
@@ -36,7 +36,7 @@ Known limitations: variable frame rate output (wlr-screencopy damage
 tracking), no hardware encoding (VAAPI broken for this on CometLake iHD),
 `--output NAME` is not validated against detected outputs (a bad name
 surfaces later as a wf-recorder exit — `capture ended early` / `stop
-failed`, exit 3), no GUI yet, region selection on
+failed`, exit 3), region selection on
 multi-monitor layouts untested.
 
 ## Install dependencies (Fedora 44, verified package names)
@@ -57,16 +57,31 @@ make check          # fmt --check + clippy -D warnings + tests + build
 cargo run -- status # run without installing
 ```
 
-Install to your user PATH:
+Install binary + desktop entry + icon to `~/.local`:
 
 ```sh
-cargo install --path .   # installs the niri-recorder bin target
+make install      # cargo install --path . --locked + data/ files; PREFIX overridable
+make uninstall    # removes all three
+```
+
+Binary only (no desktop integration):
+
+```sh
+cargo install --path .   # installs to ~/.cargo/bin
 ```
 
 ## Usage
 
+### GUI
+
+Run `niri-recorder` with no arguments (or launch **Niri Recorder** from
+your app launcher) to open the window: pick display or region, set
+fps/quality, start/stop, and act on finished recordings. Settings are
+shared with the CLI via the config file below.
+
+### CLI
+
 ```text
-niri-recorder                                # help, exit 0
 niri-recorder start                          # record sole/first display (foreground)
 niri-recorder start --target display --output DP-3
 niri-recorder start --target region          # slurp region picker
@@ -76,16 +91,22 @@ niri-recorder diagnostics                    # tool versions, outputs, backend c
 ```
 
 `start` runs in the foreground of its own process — there is no daemon.
-Bind start/stop to Niri keys directly, e.g.:
+
+### Niri keybindings
+
+Bind start/stop in `~/.config/niri/config.kdl`, inside the `binds {}`
+block (`spawn` takes the command and its arguments):
 
 ```kdl
-binds {
-    Mod+Shift+R { spawn "niri-recorder" "start"; }
-    Mod+Shift+S { spawn "niri-recorder" "stop"; }
-}
+Mod+Shift+R { spawn "niri-recorder" "start" "--target" "display"; }
+Mod+Shift+S { spawn "niri-recorder" "stop"; }
 ```
 
-Exit codes: `0` ok (incl. `status`, cancelled region select, bare help),
+If `Mod+Shift+R` is already bound (niri defaults use it for
+`switch-preset-column-width-back`), pick a free key or rebind the
+default — two binds cannot share the same key.
+
+Exit codes: `0` ok (incl. `status` and cancelled region select),
 `1` not recording / already recording / cannot signal, `2` backend
 missing or CLI parse error, `3` capture failure.
 
