@@ -21,9 +21,9 @@ struct Cli {
 enum Cmd {
     /// Start recording (foreground; Ctrl-C or `stop` to finish).
     Start {
-        /// What to capture.
-        #[arg(long, value_enum, default_value_t = TargetArg::Display)]
-        target: TargetArg,
+        /// What to capture; defaults to config.toml's `default_target`.
+        #[arg(long, value_enum)]
+        target: Option<TargetArg>,
         /// Display name to capture; default = sole/first output.
         /// Ignored for `--target region`.
         #[arg(long)]
@@ -54,8 +54,8 @@ impl From<TargetArg> for Target {
     }
 }
 
-/// Exit codes: 0 ok, 1 not recording (`stop`/`status`-adjacent), 2 backend
-/// missing or clap parse error, 3 capture failure.
+/// Exit codes: 0 ok, 1 not recording / already recording, 2 backend
+/// missing, unsupported backend or clap parse error, 3 capture failure.
 pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> anyhow::Result<()> {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -66,7 +66,7 @@ pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> anyhow::Result<()> {
             // Bare `niri-recorder`: help on stdout, exit 0.
             Cli::command().print_help()?;
         }
-        Some(Cmd::Start { target, output }) => commands::start(target.into(), output),
+        Some(Cmd::Start { target, output }) => commands::start(target, output),
         Some(Cmd::Stop) => commands::stop(),
         Some(Cmd::Status) => commands::status(),
         Some(Cmd::Diagnostics) => commands::diagnostics(),

@@ -5,12 +5,13 @@
 //! `stop`/`status` operate on the pidfile alone: the recording process is
 //! the `start` invocation itself, signalled with SIGINT.
 
+use super::TargetArg;
 use crate::app::controller::Recorder;
 use crate::app::pidfile::{clear_pidfile, read_pidfile, write_pidfile};
 use crate::app::state::AppState;
 use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
-use crate::config::settings::{self, Target};
+use crate::config::settings::{self, Settings};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use std::process::Command;
@@ -19,26 +20,37 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// Exit codes: 0 ok, 1 not recording, 2 backend missing, 3 capture failure.
-pub(super) fn start(target: Target, output: Option<String>) -> ! {
+/// Exit codes: 0 ok, 1 already recording / not recording, 2 backend
+/// missing or unsupported, 3 capture failure.
+pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! {
     let settings = settings::load();
-    // Single instance: the pidfile is the lock (read_pidfile drops stale
-    // entries), so refuse a second start before truncating it.
-    if let Some(e) = read_pidfile() {
-        eprintln!("niri-recorder: already recording (pid {})", e.pid);
-        std::process::exit(1);
+    if let Err(msg) = check_preferred_backend(&settings) {
+        eprintln!("niri-recorder: {msg}");
+        std::process::exit(2);
+    }
+    let target = target_arg.map_or(settings.default_target, Into::into);
+    // Single instance: create_new is the lock — a live pidfile claims it
+    // (exit 1), a stale one is replaced (stale check in pidfile.rs).
+    if let Err(e) = write_pidfile() {
+        match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                eprintln!("niri-recorder: {e}");
+                std::process::exit(1);
+            }
+            _ => {
+                eprintln!("niri-recorder: cannot write pidfile: {e}");
+                std::process::exit(3);
+            }
+        }
     }
     let backend = match WfRecorder::detect() {
         Ok(b) => b,
         Err(e) => {
             eprintln!("niri-recorder: {e}");
+            clear_pidfile();
             std::process::exit(2);
         }
     };
-    if let Err(e) = write_pidfile() {
-        eprintln!("niri-recorder: cannot write pidfile: {e}");
-        std::process::exit(3);
-    }
     // SIGINT (Ctrl-C or `niri-recorder stop`) / SIGTERM flips the flag; the
     // stop itself runs on this thread so Recorder stays single-threaded.
     let quit = Arc::new(AtomicBool::new(false));
@@ -53,6 +65,7 @@ pub(super) fn start(target: Target, output: Option<String>) -> ! {
     }
 
     let mut recorder = Recorder::new(backend, settings);
+    recorder.set_quit_flag(Arc::clone(&quit));
     if let Err(e) = recorder.start(target, output) {
         eprintln!("niri-recorder: {e}");
         clear_pidfile();
@@ -112,6 +125,19 @@ pub(super) fn start(target: Target, output: Option<String>) -> ! {
             clear_pidfile();
             std::process::exit(3);
         }
+    }
+}
+
+/// Spec §23.6: only `auto`/wf-recorder exist; any other value is an
+/// actionable unsupported-backend error rather than a silent ignore.
+fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
+    match settings.preferred_backend.as_str() {
+        "auto" | "wf-recorder" => Ok(()),
+        other => Err(format!(
+            "unsupported backend {other:?}: only wf-recorder is available on \
+             this system (auto resolves to it); set preferred_backend = \"auto\" \
+             in config.toml"
+        )),
     }
 }
 
@@ -237,10 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn start_defaults_to_display() {
+    fn start_target_is_optional() {
         match cmd(&["niri-recorder", "start"]) {
             Cmd::Start { target, output } => {
-                assert!(matches!(target, TargetArg::Display));
+                assert!(target.is_none()); // config `default_target` applies
                 assert!(output.is_none());
             }
             _ => panic!("expected start"),
@@ -250,7 +276,9 @@ mod tests {
     #[test]
     fn start_region_target() {
         match cmd(&["niri-recorder", "start", "--target", "region"]) {
-            Cmd::Start { target, .. } => assert!(matches!(target, TargetArg::Region)),
+            Cmd::Start { target, .. } => {
+                assert!(matches!(target, Some(TargetArg::Region)))
+            }
             _ => panic!("expected start"),
         }
     }
@@ -300,5 +328,18 @@ mod tests {
         child.wait().unwrap(); // reap — also proves stop() can still reap
         assert!(!super::is_zombie(pid));
         assert!(!super::is_zombie(std::process::id())); // live process isn't Z
+    }
+
+    /// Spec §23.6: only auto/wf-recorder are accepted; anything else is an
+    /// actionable unsupported-backend error naming the value.
+    #[test]
+    fn preferred_backend_validation() {
+        let mut s = crate::config::settings::Settings::default();
+        assert!(super::check_preferred_backend(&s).is_ok()); // auto
+        s.preferred_backend = "wf-recorder".into();
+        assert!(super::check_preferred_backend(&s).is_ok());
+        s.preferred_backend = "wl-screenrec".into();
+        let err = super::check_preferred_backend(&s).unwrap_err();
+        assert!(err.contains("wl-screenrec"));
     }
 }

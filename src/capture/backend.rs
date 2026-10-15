@@ -28,8 +28,6 @@ pub enum CaptureError {
     Spawn(std::io::Error),
     #[error("recorder exited unexpectedly: {0}")]
     UnexpectedExit(String),
-    #[error("stop timed out; sent SIGKILL")]
-    StopTimeout,
     #[error("backend unsupported: {0}")]
     Unsupported(String),
 }

@@ -1,6 +1,7 @@
 //! Single-instance pidfile under `$XDG_RUNTIME_DIR/niri-recorder/recorder.pid`
 //! (mode 0600). Content: line 1 = pid, line 2 = argv[0] basename. Stale —
-//! dead pid or argv0 mismatch — entries are ignored and removed.
+//! dead pid or argv0 mismatch — entries are ignored, removed and the write
+//! retried; a live entry makes the `O_EXCL` claim fail with AlreadyExists.
 
 use directories::BaseDirs;
 use nix::sys::signal::kill;
@@ -24,8 +25,12 @@ fn runtime_dir() -> PathBuf {
     if let Some(dir) = BaseDirs::new().and_then(|b| b.runtime_dir().map(Path::to_path_buf)) {
         return dir.join("niri-recorder");
     }
-    let uid = fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0);
-    PathBuf::from(format!("/tmp/niri-recorder-{uid}"))
+    PathBuf::from(format!("/tmp/niri-recorder-{}", self_uid()))
+}
+
+/// Our own uid via `/proc/self` metadata (no extra libc call needed).
+fn self_uid() -> u32 {
+    fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0)
 }
 
 fn argv0_basename() -> String {
@@ -40,20 +45,48 @@ fn argv0_basename() -> String {
 }
 
 /// Write `dir/recorder.pid` (0600) containing our pid and argv[0] basename.
+///
+/// The dir must be owned by us and is forced to 0700 — a foreign-owned dir
+/// is refused so no session state lands where another user controls reads.
+/// The write is an atomic `create_new` claim: on `AlreadyExists` the stale
+/// check runs once (dead file → remove + retry; live → AlreadyExists with
+/// "already recording (pid N)" for the CLI to map to exit 1).
 pub fn write_pidfile_in(dir: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
+    let meta = fs::metadata(dir)?;
+    if meta.uid() != self_uid() {
+        return Err(io::Error::other(format!(
+            "refusing foreign-owned pidfile dir {}",
+            dir.display()
+        )));
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     let path = dir.join(PIDFILE_NAME);
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
+    let mut attempt = 0;
+    let mut f = loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(f) => break f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt == 0 => {
+                attempt += 1;
+                // Existing file: live recorder → report it; stale → the read
+                // removed it and the retry claims the path.
+                if let Some(entry) = read_pidfile_in(dir) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("already recording (pid {})", entry.pid),
+                    ));
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    };
     writeln!(f, "{}", std::process::id())?;
     writeln!(f, "{}", argv0_basename())?;
-    drop(f);
-    // In case the file pre-existed with looser permissions.
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(path)
 }
 

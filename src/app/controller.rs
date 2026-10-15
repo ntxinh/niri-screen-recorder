@@ -12,6 +12,8 @@ use crate::config::settings::{expand_tilde, Settings, Target};
 use crate::files::naming::{finalize, plan_output, OutputPlan};
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Orchestrates one recording session over backend `B`.
 ///
@@ -23,6 +25,9 @@ pub struct Recorder<B: CaptureBackend> {
     backend: B,
     settings: Settings,
     session: Option<CaptureSession>,
+    /// Optional SIGINT flag shared by the CLI; lets `start` abandon a
+    /// region selection that was already cancelled mid-`slurp`.
+    quit: Option<Arc<AtomicBool>>,
 }
 
 impl<B: CaptureBackend> Recorder<B> {
@@ -32,7 +37,14 @@ impl<B: CaptureBackend> Recorder<B> {
             backend,
             settings,
             session: None,
+            quit: None,
         }
+    }
+
+    /// Wire the quit flag the CLI's signal handler sets; checked between
+    /// region selection and spawn so a Ctrl-C during `slurp` cancels.
+    pub fn set_quit_flag(&mut self, quit: Arc<AtomicBool>) {
+        self.quit = Some(quit);
     }
 
     pub fn state(&self) -> &AppState {
@@ -75,6 +87,11 @@ impl<B: CaptureBackend> Recorder<B> {
                         return Err(e);
                     }
                 };
+                // A Ctrl-C during `slurp` must not produce a recording.
+                if self.quit.as_ref().is_some_and(|q| q.load(Ordering::SeqCst)) {
+                    self.state = transition(self.state.clone(), Event::SelectionCancelled);
+                    return Ok(());
+                }
                 self.state = transition(self.state.clone(), Event::SelectionDone(geom));
                 CaptureTarget::Region(geom)
             }
@@ -94,21 +111,24 @@ impl<B: CaptureBackend> Recorder<B> {
         self.state = transition(self.state.clone(), Event::StopRequested);
         let mut session = self.session.take().expect("Recording implies session");
         let part_path = session.part_path.clone();
-        if let Err(e) = session.child.stop_graceful() {
-            // io error mid-stop — the child may still be alive and about to
-            // become unreachable; best-effort SIGKILL + reap before failing.
-            let pid = nix::unistd::Pid::from_raw(session.child.pid() as i32);
-            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
-            let _ = session.child.child.wait();
-            self.state = transition(
-                self.state.clone(),
-                Event::Exited {
-                    ok: false,
-                    path: part_path,
-                },
-            );
-            return Err(e);
-        }
+        let status = match session.child.stop_graceful() {
+            Ok(s) => s,
+            Err(e) => {
+                // io error mid-stop — the child may still be alive and about to
+                // become unreachable; best-effort SIGKILL + reap before failing.
+                let pid = nix::unistd::Pid::from_raw(session.child.pid() as i32);
+                let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                let _ = session.child.child.wait();
+                self.state = transition(
+                    self.state.clone(),
+                    Event::Exited {
+                        ok: false,
+                        path: part_path,
+                    },
+                );
+                return Err(e);
+            }
+        };
         // Success is decided only after the child is reaped and the part
         // file assessed — a clean exit writing nothing is still a failure.
         let has_data = std::fs::metadata(&part_path)
@@ -130,6 +150,27 @@ impl<B: CaptureBackend> Recorder<B> {
             final_path: session.final_path.clone(),
         }) {
             Ok(path) => {
+                if !status.success() {
+                    // Non-zero exit but recoverable data: keep the finalized
+                    // partial (FR-07) yet report the failure (§15).
+                    let tail = session.child.stderr_tail();
+                    let tail = if tail.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; stderr tail: {tail}")
+                    };
+                    self.state = transition(
+                        self.state.clone(),
+                        Event::Exited {
+                            ok: false,
+                            path: path.clone(),
+                        },
+                    );
+                    return Err(CaptureError::UnexpectedExit(format!(
+                        "{status}; kept recoverable partial at {}{tail}",
+                        path.display()
+                    )));
+                }
                 self.state = transition(
                     self.state.clone(),
                     Event::Exited {
@@ -170,7 +211,13 @@ impl<B: CaptureBackend> Recorder<B> {
     /// Run `slurp` to completion and return its stdout geometry.
     /// `Ok(None)` = user cancelled (non-zero exit or unparseable output).
     fn select_region(&mut self) -> Result<Option<Geometry>, CaptureError> {
-        let mut child = spawn(&["slurp"], &[])?;
+        let mut child = match spawn(&["slurp"], &[]) {
+            Ok(c) => c,
+            Err(CaptureError::Spawn(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(CaptureError::MissingTool("slurp", "sudo dnf install slurp"));
+            }
+            Err(e) => return Err(e),
+        };
         // Read stdout BEFORE waiting: a full pipe would deadlock slurp.
         let mut out = String::new();
         if let Some(stdout) = child.child.stdout.as_mut() {

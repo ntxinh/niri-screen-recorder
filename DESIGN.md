@@ -48,15 +48,17 @@ child liveness (including zombie detection via `/proc/<pid>/stat`) every
 100 ms. Coordination between invocations is a pidfile:
 
 - `$XDG_RUNTIME_DIR/niri-recorder/recorder.pid`, mode 0600 (fallback
-  `/tmp/niri-recorder-<uid>` when no runtime dir exists).
+  `/tmp/niri-recorder-<uid>` when no runtime dir exists; the dir is
+  forced to 0700 and refused when foreign-owned).
 - Content: pid + argv[0] basename; staleness check compares the live
   `/proc/<pid>/comm`. Dead-pid, mismatched-comm, or malformed files are
   treated as absent and removed.
 - `stop` reads the pidfile and sends SIGINT to the `start` process, whose
   `ctrlc` handler (INT+TERM+HUP+QUIT) flips the flag; the real teardown
   runs in `Recorder::stop`. `status` reports pidfile + liveness.
-- No sockets, no IPC server, no network listener. A second `start` while
-  the pidfile is live exits 1 ("already recording").
+- `start` claims the pidfile atomically with `O_EXCL` (`create_new`): a
+  live pidfile exits 1 ("already recording"), a stale one is replaced.
+  A Ctrl-C during `slurp` cancels the start — no recorder is spawned.
 
 ## State machine
 
@@ -159,7 +161,8 @@ expands only at the leading component. Runtime state under
 - VFR output (damage-tracked wlr-screencopy, ~30 fps average).
 - No hardware encoding; High quality = openh264 AVOptions
   `-p b=10000000 -p rc_mode=bitrate -p allow_skip_frames=true`.
-- `preferred_backend` accepts any string; only `"auto"`/wf-recorder
-  exists — other values are unused until a second backend lands.
+- `preferred_backend`: `"auto"` and `"wf-recorder"` are accepted; any
+  other value exits 2 with an unsupported-backend error (spec §23.6)
+  until a second backend lands.
 - Multi-monitor and interactive slurp verified only as geometry contract;
   both are manual-verification items (`docs/WAYLAND-NIRI-COMPATIBILITY.md`).

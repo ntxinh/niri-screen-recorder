@@ -29,10 +29,11 @@ The backend refused the request. Produced messages:
 
 ### `niri-recorder: already recording (pid N)`
 
-A live pidfile exists — the pidfile is the single-instance lock. Check
-`niri-recorder status`; use `niri-recorder stop`, or Ctrl-C the `start`
-process. If the file is stale it is removed automatically on next read,
-so persisting output here means a real recorder is running. Exit 1.
+A live pidfile exists — the pidfile is the single-instance lock, claimed
+atomically at `start`. Check `niri-recorder status`; use `niri-recorder
+stop`, or Ctrl-C the `start` process. A stale file is removed and
+re-claimed automatically, so persisting output here means a real
+recorder is running. Exit 1.
 
 ### `not recording` (from `stop`, exit 1)
 
@@ -47,9 +48,11 @@ permissions mismatch (recorder started as another user/root). Check `ps
 
 ### `slurp` region problems
 
-- Region mode but `slurp` missing → spawn error `capture failed: …`
-  (exit 3). Fix: `sudo dnf install slurp`. Note `detect()` treats slurp
-  as optional — region is the only mode that needs it.
+- Region mode but `slurp` missing → `missing dependency: slurp
+  (install: sudo dnf install slurp)` (exit 3). Ctrl-C during `slurp`
+  cancels the start — exit 0, `cancelled`, no recording spawned. Note
+  `detect()` treats slurp as optional — region is the only mode that
+  needs it.
 - Esc / cancel → `cancelled`, exit 0, no file. This is intended, not an
   error.
 - Unparseable slurp output → treated as cancel. Malformed geometry like
@@ -63,11 +66,13 @@ poll loop prints when the wf-recorder child dies mid-capture; the
 recording is then finalized and reported as `capture ended early; saved
 <path>` — the partial file is kept but the run is a failure (exit 3).
 
-`recorder exited unexpectedly: <stderr tail>` is not a standalone line —
-it appears as the `<err>` inside `stop failed: <err>` when the child
-exited cleanly but wrote an empty `.part` (the empty file is deleted;
-nothing is claimed saved). The captured stderr tail usually names the
-cause (bad output name, unsupported codec, protocol error).
+`recorder exited unexpectedly: <status>; kept recoverable partial at
+<path>` inside `stop failed: <err>` means the child exited non-zero but
+wrote data — the partial is finalized and kept, the run is a failure
+(exit 3). A clean exit with an empty `.part` reports just the stderr
+tail (the empty file is deleted; nothing is claimed saved). The tail
+usually names the cause (bad output name, unsupported codec, protocol
+error).
 
 ### `stop failed: …` / stop timeouts
 

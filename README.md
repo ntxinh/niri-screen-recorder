@@ -103,8 +103,9 @@ preferred_backend = "auto"    # only wf-recorder exists; auto resolves to it
 
 Output: `screen-recording-YYYY-MM-DD_HH-MM-SS.mp4` in the output
 directory (`-1`…`-99` appended on collision). In-progress captures are
-written as `<name>.mp4.part` and renamed only after the recorder exits
-cleanly and the file is non-empty.
+written as `<name>.mp4.part` and renamed once the recorder has exited and
+the file is non-empty; a non-zero exit keeps the file but is reported as
+a failure instead of a clean save.
 
 Runtime state: `$XDG_RUNTIME_DIR/niri-recorder/recorder.pid` (mode 0600;
 falls back to `/tmp/niri-recorder-<uid>` without a runtime dir).
