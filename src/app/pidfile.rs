@@ -67,21 +67,29 @@ pub fn write_pidfile() -> io::Result<PathBuf> {
 /// Stale files are removed.
 pub fn read_pidfile_in(dir: &Path) -> Option<PidEntry> {
     let path = dir.join(PIDFILE_NAME);
-    let content = fs::read_to_string(&path).ok()?;
+    let remove = |path: &Path| {
+        let _ = fs::remove_file(path);
+        None
+    };
+    let Ok(content) = fs::read_to_string(&path) else {
+        return None; // absent — nothing to clean up
+    };
     let mut lines = content.lines();
-    let pid: u32 = lines.next()?.trim().parse().ok()?;
+    let Some(pid) = lines.next().and_then(|l| l.trim().parse::<u32>().ok()) else {
+        return remove(&path); // malformed — treated as stale
+    };
     let argv0 = lines.next().unwrap_or("").trim().to_owned();
 
     let alive = kill(Pid::from_raw(pid as i32), None).is_ok();
-    // `/proc/<pid>/comm` truncates to 15 chars; compare the same truncation
-    // of the recorded argv[0] basename.
-    let comm_matches = fs::read_to_string(format!("/proc/{pid}/comm"))
-        .map(|c| c.trim_end() == &argv0[..argv0.len().min(COMM_LEN)])
+    // `/proc/<pid>/comm` byte-truncates to TASK_COMM_LEN-1; compare the same
+    // byte-level truncation of the recorded argv[0] basename (byte-level so a
+    // multi-byte char straddling byte 15 can't panic a &str slice).
+    let comm_matches = fs::read(format!("/proc/{pid}/comm"))
+        .map(|c| c.trim_ascii_end() == &argv0.as_bytes()[..argv0.len().min(COMM_LEN)])
         .unwrap_or(false);
 
     if !alive || !comm_matches {
-        let _ = fs::remove_file(&path);
-        return None;
+        return remove(&path);
     }
     Some(PidEntry { pid })
 }

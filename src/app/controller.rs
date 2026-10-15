@@ -89,6 +89,11 @@ impl<B: CaptureBackend> Recorder<B> {
         let mut session = self.session.take().expect("Recording implies session");
         let part_path = session.part_path.clone();
         if let Err(e) = session.child.stop_graceful() {
+            // io error mid-stop — the child may still be alive and about to
+            // become unreachable; best-effort SIGKILL + reap before failing.
+            let pid = nix::unistd::Pid::from_raw(session.child.pid() as i32);
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+            let _ = session.child.child.wait();
             self.state = transition(
                 self.state.clone(),
                 Event::Exited {

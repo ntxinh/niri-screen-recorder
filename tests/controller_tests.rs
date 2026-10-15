@@ -116,6 +116,28 @@ fn pidfile_roundtrip() {
 }
 
 #[test]
+fn stale_pidfile_nonascii_argv0_no_panic_and_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    // argv0 basename >15 bytes with a multi-byte char straddling byte 15 —
+    // the old `&argv0[..15]` str-slice would panic; byte-compare must not.
+    let argv0 = "niri-recorder-é-x"; // é is bytes 15-16
+    assert!(argv0.as_bytes()[14] != b'x'); // sanity: byte 15 is mid-char
+    let path = dir.path().join("recorder.pid");
+    std::fs::write(&path, format!("{}\n{}\n", std::process::id(), argv0)).unwrap();
+    assert!(read_pidfile_in(dir.path()).is_none());
+    assert!(!path.exists());
+}
+
+#[test]
+fn malformed_pidfile_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("recorder.pid");
+    std::fs::write(&path, "not-a-pid\nniri-recorder\n").unwrap();
+    assert!(read_pidfile_in(dir.path()).is_none());
+    assert!(!path.exists());
+}
+
+#[test]
 fn stale_pidfile_dead_pid_is_removed() {
     let dir = tempfile::tempdir().unwrap();
     // A pid we just reaped is guaranteed dead (no zombie, ESRCH).
