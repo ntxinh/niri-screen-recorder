@@ -15,6 +15,20 @@ pub enum AppState {
     Failed(String),
 }
 
+impl AppState {
+    /// True while a capture is live or transitioning — a close/stop
+    /// request must not tear the recorder down mid-capture.
+    pub fn is_busy(&self) -> bool {
+        matches!(
+            self,
+            AppState::SelectingRegion
+                | AppState::Starting
+                | AppState::Recording { .. }
+                | AppState::Stopping { .. }
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     StartDisplay,

@@ -1,9 +1,9 @@
 //! Command implementations. Handlers needing a specific exit code print
-//! their message and call `std::process::exit` — `run` returns `Ok(())`
-//! only for the bare-help path.
+//! their message and call `std::process::exit` — `run` never returns.
 //!
 //! `stop`/`status` operate on the pidfile alone: the recording process is
-//! the `start` invocation itself, signalled with SIGINT.
+//! whichever session claimed it — a `start` invocation or the GUI —
+//! signalled with SIGINT.
 
 use super::TargetArg;
 use crate::app::controller::Recorder;
@@ -11,6 +11,7 @@ use crate::app::pidfile::{clear_pidfile, read_pidfile, write_pidfile};
 use crate::app::state::AppState;
 use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
+use crate::capture::process::is_zombie;
 use crate::config::settings::{self, Settings};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -51,14 +52,24 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
             std::process::exit(2);
         }
     };
-    // SIGINT (Ctrl-C or `niri-recorder stop`) / SIGTERM flips the flag; the
-    // stop itself runs on this thread so Recorder stays single-threaded.
+    // SIGINT (Ctrl-C or `niri-recorder stop`) flips the flag; the stop
+    // itself runs on this thread so Recorder stays single-threaded.
+    // SIGTERM/SIGHUP/SIGQUIT flip the same flag — a kill or session
+    // teardown still finalizes the .part instead of abandoning it.
     let quit = Arc::new(AtomicBool::new(false));
-    let handler_ok = ctrlc::set_handler({
+    let mut handlers_ok = ctrlc::set_handler({
         let quit = Arc::clone(&quit);
         move || quit.store(true, Ordering::SeqCst)
-    });
-    if handler_ok.is_err() {
+    })
+    .is_ok();
+    for sig in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGQUIT,
+    ] {
+        handlers_ok &= signal_hook::flag::register(sig, Arc::clone(&quit)).is_ok();
+    }
+    if !handlers_ok {
         eprintln!("niri-recorder: cannot install signal handler");
         clear_pidfile();
         std::process::exit(3);
@@ -130,7 +141,7 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
 
 /// Spec §23.6: only `auto`/wf-recorder exist; any other value is an
 /// actionable unsupported-backend error rather than a silent ignore.
-fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
+pub(crate) fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
     match settings.preferred_backend.as_str() {
         "auto" | "wf-recorder" => Ok(()),
         other => Err(format!(
@@ -139,17 +150,6 @@ fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
              in config.toml"
         )),
     }
-}
-
-/// True when `pid` is a zombie (exited, not yet reaped). Reads
-/// `/proc/<pid>/stat` — field 3 after the last `)` is the state char;
-/// reading proc does not reap, so `stop_graceful` still works afterwards.
-fn is_zombie(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|s| s.rsplit(')').next().map(|rest| rest.to_owned()))
-        .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
-        .is_some_and(|state| state == "Z")
 }
 
 /// Signal the recorder recorded in the pidfile to stop.

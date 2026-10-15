@@ -10,10 +10,12 @@ use crate::capture::process::spawn;
 use crate::capture::request::{CaptureRequest, CaptureTarget, Geometry};
 use crate::config::settings::{expand_tilde, Settings, Target};
 use crate::files::naming::{finalize, plan_output, OutputPlan};
+use nix::unistd::Pid;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Orchestrates one recording session over backend `B`.
 ///
@@ -210,6 +212,8 @@ impl<B: CaptureBackend> Recorder<B> {
 
     /// Run `slurp` to completion and return its stdout geometry.
     /// `Ok(None)` = user cancelled (non-zero exit or unparseable output).
+    /// A set `quit` flag kills slurp so close-while-selecting can't
+    /// deadlock the worker on a crosshair left on screen.
     fn select_region(&mut self) -> Result<Option<Geometry>, CaptureError> {
         let mut child = match spawn(&["slurp"], &[]) {
             Ok(c) => c,
@@ -218,12 +222,36 @@ impl<B: CaptureBackend> Recorder<B> {
             }
             Err(e) => return Err(e),
         };
+        // ponytail: pid-reuse window — after wait() reaps slurp the
+        // watcher can hold its dead pid for ≤50 ms and a quit landing in
+        // that window would SIGKILL a recycled process. Accepted: the
+        // quit flag is user-driven (window close), so the odds of it
+        // arming in the exact ~50 ms after slurp exits *and* the pid
+        // being recycled are negligible; a generation-checked kill would
+        // double the code. Watcher exits on its own next tick.
+        let watcher = self.quit.as_ref().map(|quit| {
+            let quit = Arc::clone(quit);
+            let pid = Pid::from_raw(child.pid() as i32);
+            std::thread::spawn(move || loop {
+                if quit.load(Ordering::SeqCst) {
+                    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                    break;
+                }
+                if nix::sys::signal::kill(pid, None).is_err() {
+                    break; // slurp already gone
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            })
+        });
         // Read stdout BEFORE waiting: a full pipe would deadlock slurp.
         let mut out = String::new();
         if let Some(stdout) = child.child.stdout.as_mut() {
             let _ = stdout.read_to_string(&mut out);
         }
         let status = child.child.wait().map_err(CaptureError::Spawn)?;
+        if let Some(h) = watcher {
+            let _ = h.join();
+        }
         if !status.success() {
             return Ok(None);
         }

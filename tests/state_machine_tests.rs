@@ -141,3 +141,22 @@ fn invalid_pairs_are_noops() {
         assert_eq!(transition(s.clone(), e), s);
     }
 }
+
+#[test]
+fn busy_states_block_teardown() {
+    for s in [
+        AppState::SelectingRegion,
+        AppState::Starting,
+        AppState::Recording { pid: 1 },
+        AppState::Stopping { pid: 1 },
+    ] {
+        assert!(s.is_busy(), "{s:?} must be busy");
+    }
+    for s in [
+        AppState::Idle,
+        AppState::Completed(PathBuf::from("/tmp/x")),
+        AppState::Failed("e".into()),
+    ] {
+        assert!(!s.is_busy(), "{s:?} must not be busy");
+    }
+}

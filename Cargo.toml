@@ -6,13 +6,20 @@ description = "Local-first screen recorder for Wayland/Niri"
 
 [dependencies]
 anyhow = "1"
+async-channel = "2"
 clap = { version = "4", features = ["derive"] }
-ctrlc = { version = "3", features = ["termination"] }
+ctrlc = "3"
 directories = "6"
+# v4_10: gtk::FileLauncher for the completed-file "Open Folder" action.
+gtk4 = { version = "0.11.5", features = ["v4_10"] }
+# v1_5: adw::PreferencesDialog + adw::AlertDialog (settings & close prompts).
+libadwaita = { version = "0.9.2", features = ["v1_5"] }
 nix = { version = "0.30", features = ["signal", "process"] }
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# SIGTERM/SIGHUP/SIGQUIT handlers — per-signal flags (ctrlc is INT-only).
+signal-hook = "0.3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "local-offset"] }
 toml = "0.8"

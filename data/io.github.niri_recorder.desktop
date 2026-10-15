@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Niri Recorder
+Comment=Screen recorder for Wayland/Niri
+Exec=niri-recorder
+Icon=niri-recorder
+Terminal=false
+Categories=AudioVideo;Recorder;
+Keywords=screen;record;capture;wayland;
+StartupNotify=true
+DBusActivatable=false

@@ -14,8 +14,20 @@ use std::time::{Duration, Instant};
 
 const STDERR_RING_CAP: usize = 50;
 const POLL_TICK: Duration = Duration::from_millis(50);
+
 const SIGINT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGTERM_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// True when `pid` is a zombie (exited, not yet reaped). Reads
+/// `/proc/<pid>/stat` — field 3 after the last `)` is the state char;
+/// reading proc does not reap, so `stop_graceful` still works afterwards.
+pub(crate) fn is_zombie(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|s| s.rsplit(')').next().map(|rest| rest.to_owned()))
+        .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
+        .is_some_and(|state| state == "Z")
+}
 
 /// A spawned child process owned by the capture controller.
 #[derive(Debug)]
