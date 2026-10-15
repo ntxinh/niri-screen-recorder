@@ -1,6 +1,6 @@
 //! CLI entry point: clap definitions plus `run` called by `main.rs`.
 
-mod commands;
+pub(crate) mod commands;
 
 use crate::config::settings::Target;
 use clap::{Parser, Subcommand};

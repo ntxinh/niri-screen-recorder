@@ -10,6 +10,7 @@ use crate::app::pidfile::{clear_pidfile, read_pidfile, write_pidfile};
 use crate::app::state::AppState;
 use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
+use crate::capture::process::is_zombie;
 use crate::config::settings::{self, Settings};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -129,7 +130,7 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
 
 /// Spec §23.6: only `auto`/wf-recorder exist; any other value is an
 /// actionable unsupported-backend error rather than a silent ignore.
-fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
+pub(crate) fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
     match settings.preferred_backend.as_str() {
         "auto" | "wf-recorder" => Ok(()),
         other => Err(format!(
@@ -138,17 +139,6 @@ fn check_preferred_backend(settings: &Settings) -> Result<(), String> {
              in config.toml"
         )),
     }
-}
-
-/// True when `pid` is a zombie (exited, not yet reaped). Reads
-/// `/proc/<pid>/stat` — field 3 after the last `)` is the state char;
-/// reading proc does not reap, so `stop_graceful` still works afterwards.
-fn is_zombie(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|s| s.rsplit(')').next().map(|rest| rest.to_owned()))
-        .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
-        .is_some_and(|state| state == "Z")
 }
 
 /// Signal the recorder recorded in the pidfile to stop.
