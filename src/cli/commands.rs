@@ -51,14 +51,24 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
             std::process::exit(2);
         }
     };
-    // SIGINT (Ctrl-C or `niri-recorder stop`) / SIGTERM flips the flag; the
-    // stop itself runs on this thread so Recorder stays single-threaded.
+    // SIGINT (Ctrl-C or `niri-recorder stop`) flips the flag; the stop
+    // itself runs on this thread so Recorder stays single-threaded.
+    // SIGTERM/SIGHUP/SIGQUIT flip the same flag — a kill or session
+    // teardown still finalizes the .part instead of abandoning it.
     let quit = Arc::new(AtomicBool::new(false));
-    let handler_ok = ctrlc::set_handler({
+    let mut handlers_ok = ctrlc::set_handler({
         let quit = Arc::clone(&quit);
         move || quit.store(true, Ordering::SeqCst)
-    });
-    if handler_ok.is_err() {
+    })
+    .is_ok();
+    for sig in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGQUIT,
+    ] {
+        handlers_ok &= signal_hook::flag::register(sig, Arc::clone(&quit)).is_ok();
+    }
+    if !handlers_ok {
         eprintln!("niri-recorder: cannot install signal handler");
         clear_pidfile();
         std::process::exit(3);

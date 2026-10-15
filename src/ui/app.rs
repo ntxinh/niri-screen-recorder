@@ -20,7 +20,8 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const APP_ID: &str = "io.github.niri_recorder";
@@ -127,11 +128,13 @@ impl Ui {
         }
         self.refresh();
 
-        // "Stop recording and exit" armed `pending_quit`; the first
-        // quiescent event closes the window (close-request sees Idle-ish
-        // state and proceeds, tearing down window → Ui → controller →
-        // worker, then the app exits with no windows). Idle counts too:
-        // a quit-flag-aborted slurp lands there, not on Completed/Failed.
+        // A pending quit (close-while-recording prompt, or a terminate
+        // signal while busy) completes on the first quiescent event.
+        // Idle counts too: a quit-flag-aborted slurp lands there, not on
+        // Completed/Failed. destroy(), not close(): SIGTERM must exit
+        // even if a close-confirm prompt is open and vetoing
+        // close-request — and a terminate-signal quit can't afford
+        // another veto anywhere.
         if self.pending_quit
             && matches!(
                 self.state,
@@ -139,10 +142,25 @@ impl Ui {
             )
         {
             if let Some(w) = self.window.upgrade() {
-                // Defer past this borrow_mut: w.close() fires
-                // close-request synchronously, whose handler borrows ui.
-                glib::idle_add_local_once(move || w.close());
+                // Defer past this borrow_mut: widget destruction runs
+                // signal teardown that can touch the Rc<Ui> closures.
+                glib::idle_add_local_once(move || w.destroy());
             }
+        }
+    }
+
+    /// SIGTERM/SIGHUP/SIGQUIT picked up by the tick. Busy → arm
+    /// `pending_quit` and request Stop so the capture finalizes, then
+    /// `on_event` destroys the window. Not busy → nothing is coming, so
+    /// destroy now. The shared quit flag also aborts a pending slurp so
+    /// exit can't deadlock on a stuck region selection.
+    fn terminate(&mut self) {
+        self.ctl.quit_flag().store(true, Ordering::SeqCst);
+        if self.state.is_busy() {
+            self.pending_quit = true;
+            self.ctl.request_stop();
+        } else if let Some(w) = self.window.upgrade() {
+            glib::idle_add_local_once(move || w.destroy());
         }
     }
 
@@ -269,6 +287,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let ctl = Rc::new(GuiController::spawn(tx_events));
     // `niri-recorder stop` SIGINTs this process (it owns the pidfile);
     // route the signal to the worker's Stop path, same as the CLI's flag.
+    // SIGINT is stop-only — the GUI stays open.
     let cmd_tx = ctl.command_sender();
     let quit_flag = ctl.quit_flag();
     if let Err(e) = ctrlc::set_handler(move || {
@@ -276,6 +295,20 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         let _ = cmd_tx.send(UiCommand::Stop);
     }) {
         eprintln!("niri-recorder: cannot install signal handler: {e}");
+    }
+    // SIGTERM/SIGHUP/SIGQUIT mean "terminate this process" (kill, session
+    // teardown) — SIGINT alone is the stop-protocol signal. They can't
+    // share ctrlc's handler, so they arm their own flag; the 500ms tick
+    // below picks it up and terminates gracefully.
+    let term_flag = Arc::new(AtomicBool::new(false));
+    for sig in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGQUIT,
+    ] {
+        if let Err(e) = signal_hook::flag::register(sig, Arc::clone(&term_flag)) {
+            eprintln!("niri-recorder: cannot install signal {sig} handler: {e}");
+        }
     }
 
     // --- selectors ------------------------------------------------------
@@ -475,14 +508,7 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     {
         let ui = Rc::clone(&ui);
         window.connect_close_request(move |window| {
-            let busy = matches!(
-                ui.borrow().state,
-                AppState::SelectingRegion
-                    | AppState::Starting
-                    | AppState::Recording { .. }
-                    | AppState::Stopping { .. }
-            );
-            if !busy {
+            if !ui.borrow().state.is_busy() {
                 return glib::Propagation::Proceed;
             }
             // A second close while the prompt is up must still veto —
@@ -517,8 +543,9 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         });
     }
 
-    // Elapsed timer + external-pidfile watch. Tick only does work while
-    // Recording or while idle-checking the pidfile; it dies with `ui`.
+    // Elapsed timer + external-pidfile watch + terminate-signal poll.
+    // Tick only does work while Recording or while idle-checking the
+    // pidfile; it dies with `ui`.
     glib::timeout_add_local(
         Duration::from_millis(500),
         glib::clone!(
@@ -527,6 +554,13 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             #[upgrade_or]
             glib::ControlFlow::Break,
             move || {
+                // SIGTERM/SIGHUP/SIGQUIT flipped this in the signal
+                // handler — real work runs here, on the main context.
+                // Stop once consumed: the termination owns the rest.
+                if term_flag.swap(false, Ordering::SeqCst) {
+                    ui.borrow_mut().terminate();
+                    return glib::ControlFlow::Break;
+                }
                 let mut ui = ui.borrow_mut();
                 // Another session may claim the pidfile in any startable
                 // state (Idle/Completed/Failed), not just Idle.
