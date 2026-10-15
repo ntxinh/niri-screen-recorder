@@ -36,6 +36,8 @@ impl WfRecorder {
     }
 
     /// Output names from `niri msg --json outputs`; empty on any failure.
+    /// Enabled outputs only — `niri msg` also reports disabled connectors
+    /// (`logical: null`), and a disabled output cannot be captured.
     pub fn list_outputs() -> Vec<String> {
         let Ok(out) = Command::new("niri")
             .args(["msg", "--json", "outputs"])
@@ -45,9 +47,18 @@ impl WfRecorder {
         else {
             return Vec::new();
         };
-        serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&out.stdout)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default()
+        Self::parse_enabled_outputs(&out.stdout)
+    }
+
+    /// Pure parser for the `outputs` map so the enabled filter is testable
+    /// without a compositor. Keys whose `logical` is null are disabled.
+    fn parse_enabled_outputs(json: &[u8]) -> Vec<String> {
+        let map: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(json).unwrap_or_default();
+        map.iter()
+            .filter(|(_, v)| !v.get("logical").is_none_or(serde_json::Value::is_null))
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     /// Full argument vector for one capture; pure and unit-testable.
@@ -133,5 +144,25 @@ impl CaptureBackend for WfRecorder {
             part_path: req.part_path,
             final_path,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WfRecorder;
+
+    #[test]
+    fn disabled_outputs_are_filtered() {
+        // Mirrors real `niri msg --json outputs` on this machine: a
+        // disabled connector has `"logical": null` and must not be
+        // offered as a capture target.
+        let json = br#"{
+            "DP-3": {"logical": {"x": 0, "y": 0, "width": 1920, "height": 1080}},
+            "eDP-1": {"logical": null}
+        }"#;
+        assert_eq!(WfRecorder::parse_enabled_outputs(json), vec!["DP-3"]);
+
+        let all_off = br#"{"eDP-1": {"logical": null}}"#;
+        assert!(WfRecorder::parse_enabled_outputs(all_off).is_empty());
     }
 }
