@@ -100,6 +100,42 @@ in the output directory — i.e. >100 starts in one second, or the
 directory is full of stale `.part` files. Clean the directory or set a
 different `output_directory`.
 
+### Output filesystem problems (verified 2026-10-15)
+
+- **Full at start**: wf-recorder exits with `Failed to write file
+  header` / `No space left on device`; niri-recorder surfaces the
+  stderr tail (`stop failed: recorder exited unexpectedly: …`),
+  deletes the empty `.part`, exits 3. Free space and retry.
+- **Fills mid-capture**: wf-recorder buffers muxer output and can exit
+  0 anyway, leaving a truncated, still-somewhat-playable file reported
+  as `saved`. If a file is suspiciously small for its duration, check
+  `df -h` on the output directory — this is an upstream wf-recorder
+  limitation the recorder cannot detect.
+- **`ulimit -f` / per-file size limit**: wf-recorder preallocates a
+  ~8.3 MB raw-frame buffer file (memfd). A limit under that fails at
+  spawn with `creating a buffer file … File too large`, surfaced as
+  `stop failed` / exit 3.
+
+### Disabled monitor still listed / recorded blank
+
+As of the disabled-connector fix, `niri msg output <NAME> off` removes
+the output from `diagnostics` and the GUI dropdown automatically — no
+action needed. On older builds a disabled connector appeared as a
+selectable output; upgrade or re-enable it.
+
+### Recording has ~1 frame / duration N/A
+
+wf-recorder is damage-tracked: a completely static screen produces
+almost no frames — a valid but near-empty file (single h264 frame,
+`duration=N/A` in ffprobe). Move a window, run a clock, or switch
+workspaces during capture to get real frame counts.
+
+### Stop seems slow (~3–4 s)
+
+Normal: SIGINT tells wf-recorder to finalize, and its encoder/muxer
+flush takes a few seconds for mp4. The `.part` renames to the final
+name once it exits.
+
 ### Config warnings
 
 A missing `config.toml` is silent — defaults apply. A malformed file or

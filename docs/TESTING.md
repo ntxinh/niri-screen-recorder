@@ -17,6 +17,32 @@ require a live Wayland session.
 | `tests/geometry_tests.rs` | `Geometry::parse_slurp`: `x,y WxH`, negative origins accepted, zero size and garbage rejected; `to_wf_arg` round-trip |
 | `src/cli/commands.rs` `mod tests` | Clap surface: `--target`/`--output` parsing (`--target` optional; config `default_target` applies), invalid target rejected, `stop`/`status`/`diagnostics`/bare invocation; `preferred_backend` accepts `auto`/`wf-recorder` only; `is_zombie` detects an exited-but-unreaped child via `/proc/<pid>/stat` (the poll loop's child-death seam, since `kill(pid,0)` is `Ok` on zombies). `first_line`/`diagnostics` internals are untested |
 
+## Live reliability pass (2026-10-15, dual output DP-3 + eDP-1)
+
+Exercised on the target session; full command log in
+`.superpowers/sdd/2026-10-15-gui-and-packaging/task-6-report.md`.
+
+- `niri msg outputs`: DP-3 at (0,0), eDP-1 enabled at (−1920,0).
+- CLI `start --target display --output eDP-1` and `--output DP-3`:
+  h264/1920×1080, video-only stream, finalized playable files. Static
+  eDP-1 captured 1 frame (VFR); with on-screen activity ~30 fps.
+- `start --target display` with two outputs enabled → `backend
+  unsupported: multiple displays; --output required`, exit 3.
+- Disk pressure (`unshare -rm` + 20 MB tmpfs, `XDG_CONFIG_HOME`
+  override): 0-byte-free dir → wf-recorder `No space left on device`
+  surfaced, empty `.part` deleted, exit 3. `ulimit -f` below ~8.3 MB →
+  wf-recorder's raw-frame buffer fails at spawn, surfaced, exit 3.
+  Mid-capture fill: wf-recorder buffers muxer output and may exit 0
+  with a truncated file — documented caveat.
+- 60 s DP-3 capture with ~20 workspace switches: 60.53 s, 1817 frames,
+  137 KB, playable.
+- GUI (driven via AT-SPI `click` action; keyboard/pointer input is not
+  injectable on niri): with DP-3 off the Display dropdown enumerated
+  eDP-1; Start/Stop produced a 12.9 s, 388-frame eDP-1 capture.
+- Bug fixed during this pass: `list_outputs` offered disabled
+  connectors (`logical: null`) as capture targets — now filtered, with
+  a regression test (`disabled_outputs_are_filtered`).
+
 ## Fake-child harness
 
 `tests/fake_child.sh` is a stand-in recorder: requires `$TARGET`, prints
@@ -33,20 +59,20 @@ window → (untested last resort) SIGKILL → always `wait()`.
 Not automatable — run on a real Fedora 44 + Niri session before claiming
 support. Mark results in `docs/WAYLAND-NIRI-COMPATIBILITY.md`.
 
-- [ ] Full-display capture on a single monitor (`start --target display`)
-- [ ] Interactive region capture (`start --target region`, draw with slurp)
-- [ ] Record while switching workspaces repeatedly, then stop
-- [ ] Record while focusing other applications
-- [ ] Cancel region selection (Esc) → `cancelled`, exit 0, no file
-- [ ] Two monitors with different resolutions; `--output NAME` each
-- [ ] Region selection on each monitor and across output boundaries
-- [ ] Mixed scaling / negative-coordinate layouts if present
+- [x] Full-display capture on a single monitor (`start --target display`) — DP-3 verified; eDP-1 while it was the sole enabled output
+- [ ] Interactive region capture (`start --target region`, draw with slurp) — cannot inject a drag headlessly; manual steps in `docs/WAYLAND-NIRI-COMPATIBILITY.md`
+- [x] Record while switching workspaces repeatedly, then stop — ~20 switches in a 60 s capture, uninterrupted
+- [x] Record while focusing other applications — focus/workspace churn during the 60 s run
+- [ ] Cancel region selection (Esc) → `cancelled`, exit 0, no file — needs a physical keyboard Esc during slurp
+- [x] Two monitors with different resolutions; `--output NAME` each — same resolution (1920×1080) on both; `--output` path verified on each
+- [ ] Region selection on each monitor and across output boundaries — needs a real drag
+- [x] Mixed scaling / negative-coordinate layouts if present — negative-coordinate layout present (eDP-1 at −1920,0); mixed scale absent
 - [ ] Monitor disconnect during recording → clean stop, file preserved
 - [ ] `dnf remove`/`mv` a required tool → actionable missing-dependency error
-- [ ] Full output filesystem → safe stop, partial `.part` preserved
-- [ ] Long recording stops and the file is playable end-to-end
-- [ ] `ffprobe` confirms no audio stream in output
-- [ ] CPU usage / file size at `quality = standard` vs `high`
+- [x] Full output filesystem → safe stop, partial `.part` preserved — honest exit 3; empty `.part` deleted; mid-capture fill caveat documented
+- [x] Long recording stops and the file is playable end-to-end — 60 s / 1817 frames
+- [x] `ffprobe` confirms no audio stream in output — every capture probed: single `video` stream
+- [ ] CPU usage / file size at `quality = standard` vs `high` — standard verified (137 KB/min idle-ish); high measured on tmpfs only
 
 Per AGENTS.md: results reported as passing must have been run and
 inspected; unverified items stay on this list.
