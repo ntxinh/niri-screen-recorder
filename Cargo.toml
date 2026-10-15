@@ -11,6 +11,7 @@ directories = "6"
 nix = { version = "0.30", features = ["signal", "process"] }
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "local-offset"] }
 toml = "0.8"

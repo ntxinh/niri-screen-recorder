@@ -2,6 +2,7 @@
 //! capability probing, and the backend trait.
 
 pub mod backend;
+pub mod backends;
 pub mod capabilities;
 pub mod process;
 pub mod request;
