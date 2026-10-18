@@ -28,6 +28,23 @@ pub struct Settings {
     /// FR-09: last display the user recorded. A name absent from the
     /// current outputs falls back to the first (see `ui::format::select_index`).
     pub last_output: Option<String>,
+    /// In-window accelerators (GTK syntax, e.g. `<Control>r`). Empty
+    /// disables the binding. Wayland has no portable global hotkey, so
+    /// these only fire while the window has focus.
+    pub start_shortcut: String,
+    pub stop_shortcut: String,
+    /// Delay before a GUI-initiated capture: 0, 3, 5 or 10 seconds.
+    pub countdown_seconds: u32,
+    /// Opt-in retention for finished recordings (see `files::retention`).
+    pub cleanup_enabled: bool,
+    /// Keep at most this many recordings; 0 = no count limit.
+    pub cleanup_max_files: u32,
+    /// Delete recordings older than this; 0 = no age limit.
+    pub cleanup_max_age_days: u32,
+    /// Encoder preference: `auto`/`software` (container default),
+    /// `hardware` (first probed hardware encoder, software fallback), or
+    /// an explicit ffmpeg encoder name such as `h264_vaapi`.
+    pub encoder: String,
 }
 
 impl Default for Settings {
@@ -39,6 +56,13 @@ impl Default for Settings {
             quality: Quality::Standard,
             preferred_backend: "auto".into(),
             last_output: None,
+            start_shortcut: "<Control>r".into(),
+            stop_shortcut: "<Control>s".into(),
+            countdown_seconds: 0,
+            cleanup_enabled: false,
+            cleanup_max_files: 20,
+            cleanup_max_age_days: 30,
+            encoder: "auto".into(),
         }
     }
 }
@@ -47,6 +71,8 @@ impl Default for Settings {
 pub enum ConfigError {
     #[error("invalid default_fps {0}; must be 24, 30, or 60")]
     InvalidFps(u32),
+    #[error("invalid countdown_seconds {0}; must be 0, 3, 5, or 10")]
+    InvalidCountdown(u32),
     #[error("failed to parse config: {0}")]
     Parse(#[from] toml::de::Error),
 }
@@ -56,8 +82,21 @@ impl Settings {
     pub fn from_toml_str(s: &str) -> Result<Self, ConfigError> {
         let settings: Self = toml::from_str(s)?;
         match settings.default_fps {
-            24 | 30 | 60 => Ok(settings),
-            fps => Err(ConfigError::InvalidFps(fps)),
+            24 | 30 | 60 => {}
+            fps => return Err(ConfigError::InvalidFps(fps)),
+        }
+        match settings.countdown_seconds {
+            0 | 3 | 5 | 10 => Ok(settings),
+            secs => Err(ConfigError::InvalidCountdown(secs)),
+        }
+    }
+
+    /// Retention settings in the form `files::retention` consumes.
+    pub fn cleanup_rules(&self) -> crate::files::retention::CleanupRules {
+        crate::files::retention::CleanupRules {
+            enabled: self.cleanup_enabled,
+            max_files: (self.cleanup_max_files > 0).then_some(self.cleanup_max_files as usize),
+            max_age_days: (self.cleanup_max_age_days > 0).then_some(self.cleanup_max_age_days),
         }
     }
 }

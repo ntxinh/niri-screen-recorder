@@ -4,6 +4,7 @@
 pub mod backend;
 pub mod backends;
 pub mod capabilities;
+pub mod encoders;
 pub mod process;
 pub mod request;
 

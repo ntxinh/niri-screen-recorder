@@ -60,4 +60,7 @@ pub struct CaptureRequest {
     pub fps: u32,
     pub quality: Quality,
     pub part_path: PathBuf,
+    /// Resolved ffmpeg encoder name (see `capture::encoders`). `None`
+    /// keeps the container's software default.
+    pub encoder: Option<String>,
 }

@@ -13,6 +13,7 @@ use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
 use crate::capture::process::is_zombie;
 use crate::config::settings::{self, Settings};
+use crate::daemon::client;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use std::process::Command;
@@ -30,6 +31,52 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
         std::process::exit(2);
     }
     let target = target_arg.map_or(settings.default_target, Into::into);
+    // FR-09 parity with the GUI: a start naming a display remembers it for
+    // subsequent bare starts (keybinds, DMS widget) on multi-monitor setups.
+    if let Some(name) = &output {
+        if settings.last_output.as_deref() != Some(name.as_str()) {
+            let mut s = settings.clone();
+            s.last_output = Some(name.clone());
+            if let Err(e) = settings::save(&s) {
+                eprintln!("niri-recorder: cannot save settings: {e}");
+            }
+        }
+    }
+    // A running daemon owns capture: forward and exit instead of
+    // starting a second recorder. `None` = no daemon, use the pidfile.
+    if let Some(result) = client::try_start(
+        target,
+        output.clone(),
+        settings.default_fps,
+        settings.quality,
+    ) {
+        match result {
+            Ok(resp) if resp.ok && resp.state == "recording" => {
+                match (&resp.part, resp.pid) {
+                    (Some(part), _) => println!("recording → {part}"),
+                    (_, Some(pid)) => println!("recording pid={pid}"),
+                    _ => println!("recording"),
+                }
+                std::process::exit(0);
+            }
+            // Ok without Recording = cancelled region selection.
+            Ok(resp) if resp.ok => {
+                println!("cancelled");
+                std::process::exit(0);
+            }
+            Ok(resp) => {
+                let msg = resp
+                    .error
+                    .unwrap_or_else(|| "daemon refused the start".into());
+                eprintln!("niri-recorder: {msg}");
+                std::process::exit(i32::from(resp.code.max(1)));
+            }
+            Err(e) => {
+                eprintln!("niri-recorder: {e}");
+                std::process::exit(3);
+            }
+        }
+    }
     // Single instance: create_new is the lock — a live pidfile claims it
     // (exit 1), a stale one is replaced (stale check in pidfile.rs).
     if let Err(e) = write_pidfile() {
@@ -75,7 +122,7 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
         std::process::exit(3);
     }
 
-    let mut recorder = Recorder::new(backend, settings);
+    let mut recorder = Recorder::new(backend, settings.clone());
     recorder.set_quit_flag(Arc::clone(&quit));
     if let Err(e) = recorder.start(target, output) {
         eprintln!("niri-recorder: {e}");
@@ -117,6 +164,7 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
     match (stopped, child_died) {
         (Ok(path), false) => {
             println!("saved → {}", path.display());
+            crate::files::retention::apply_for_settings(&settings);
             clear_pidfile();
             std::process::exit(0);
         }
@@ -154,6 +202,31 @@ pub(crate) fn check_preferred_backend(settings: &Settings) -> Result<(), String>
 
 /// Signal the recorder recorded in the pidfile to stop.
 pub(super) fn stop() -> ! {
+    if let Some(result) = client::try_stop() {
+        match result {
+            Ok(resp) if resp.ok => {
+                match resp.saved {
+                    Some(path) => println!("saved → {path}"),
+                    None => println!("stop requested (daemon)"),
+                }
+                std::process::exit(0);
+            }
+            // Code 1 = the daemon is idle. The pidfile may still belong
+            // to a GUI/foreground recorder, so fall through.
+            Ok(resp) if resp.code == 1 => {}
+            Ok(resp) => {
+                let msg = resp
+                    .error
+                    .unwrap_or_else(|| "daemon could not stop the capture".into());
+                eprintln!("niri-recorder: {msg}");
+                std::process::exit(i32::from(resp.code.max(1)));
+            }
+            Err(e) => {
+                eprintln!("niri-recorder: {e}");
+                std::process::exit(3);
+            }
+        }
+    }
     match read_pidfile() {
         Some(e) => match kill(Pid::from_raw(e.pid as i32), Signal::SIGINT) {
             Ok(()) => {
@@ -172,8 +245,23 @@ pub(super) fn stop() -> ! {
     }
 }
 
-/// Print whether a recording is in progress (pidfile + liveness).
+/// Print whether a recording is in progress (daemon, then pidfile).
 pub(super) fn status() -> ! {
+    if let Some(result) = client::try_status() {
+        match result {
+            Ok(resp) if resp.state == "recording" => {
+                println!("recording pid={}", resp.pid.unwrap_or(0));
+                std::process::exit(0);
+            }
+            // Daemon running but idle; a GUI/foreground recorder may still
+            // own the pidfile.
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("niri-recorder: {e}");
+                std::process::exit(3);
+            }
+        }
+    }
     match read_pidfile() {
         Some(e) => println!("recording pid={}", e.pid),
         None => println!("idle"),
@@ -204,6 +292,17 @@ pub(super) fn diagnostics() -> ! {
         first_line("ffprobe", &["-version"]).unwrap_or_else(|| "missing".into())
     );
     println!("config: {}", config_path());
+    println!(
+        "daemon socket: {}",
+        client::socket_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(unknown)".into())
+    );
+    match client::try_status() {
+        Some(Ok(r)) => println!("daemon: running (state={})", r.state),
+        Some(Err(e)) => println!("daemon: error ({e})"),
+        None => println!("daemon: not running"),
+    }
     match WfRecorder::detect() {
         Ok(b) => match b.capabilities() {
             Ok(c) => println!(
@@ -304,6 +403,7 @@ mod tests {
             cmd(&["niri-recorder", "diagnostics"]),
             Cmd::Diagnostics
         ));
+        assert!(matches!(cmd(&["niri-recorder", "daemon"]), Cmd::Daemon));
     }
 
     #[test]

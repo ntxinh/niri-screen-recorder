@@ -61,6 +61,17 @@ wf-recorder -f <name>.mp4.part -m mp4 -c libopenh264 -r <fps>
   verified to log a 10000 kb/s target.
 - No audio flag (`-a`/`--audio`) is ever emitted; asserted by
   `tests/backend_tests.rs`.
+- `encoder` (Phase 6) replaces the container default: `-c <name>` where
+  `name` comes from `capture::encoders::resolve`. `auto`/`software` keep
+  `libopenh264` (MP4) / `libvpx-vp9` (WebM); `hardware` picks the first
+  encoder listed by `ffmpeg -encoders` in the order
+  `h264_vaapi` → `h264_nvenc` → `h264_qsv` → `h264_v4l2m2m` (VP9 VAAPI/QSV
+  for WebM). An unlisted explicit name falls back to software with a
+  warning. **Availability is not verification**: this CometLake iHD
+  machine lists VAAPI encoders but the Phase 0 spike found no usable
+  H.264 encode profile, so hardware encoding is unverified.
+- Cursor control is not offered: wf-recorder 0.6.0 (`--help`) exposes no
+  cursor-visibility flag, so the compositor decides.
 
 ## Backend abstraction
 

@@ -9,6 +9,7 @@ fn req_for(target: CaptureTarget) -> CaptureRequest {
         fps: 30,
         quality: Quality::Standard,
         part_path: PathBuf::from("/tmp/rec-1.mp4.part"),
+        encoder: None,
     }
 }
 
@@ -69,6 +70,27 @@ fn standard_has_no_encoder_overrides_high_sets_bitrate() {
     let high_argv = WfRecorder::argv(&req);
     let b_idx = high_argv.iter().position(|x| x == "b=10000000");
     assert!(b_idx.is_some() && high_argv[b_idx.unwrap() - 1] == "-p");
+}
+
+#[test]
+fn explicit_encoder_overrides_container_default() {
+    let mut req = req_for(CaptureTarget::Display("DP-3".into()));
+    req.encoder = Some("h264_vaapi".into());
+    let a = WfRecorder::argv(&req);
+    assert_eq!(flag_value(&a, "-c"), Some("h264_vaapi"));
+    // Muxer still follows the container, not the codec.
+    assert_eq!(flag_value(&a, "-m"), Some("mp4"));
+    assert!(!a.iter().any(|x| x == "-a" || x.starts_with("--audio")));
+}
+
+#[test]
+fn high_quality_uses_generic_bitrate_for_hardware() {
+    let mut req = req_for(CaptureTarget::Display("DP-3".into()));
+    req.quality = Quality::High;
+    req.encoder = Some("h264_vaapi".into());
+    let a = WfRecorder::argv(&req);
+    assert!(a.iter().any(|x| x == "b=10000000"));
+    assert!(!a.iter().any(|x| x == "rc_mode=bitrate"));
 }
 
 #[test]

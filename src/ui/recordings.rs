@@ -4,28 +4,22 @@
 //! [`RecentRecordings`] is the GTK section (`adw::PreferencesGroup` wrapping a
 //! `boxed-list` `gtk::ListBox` — one row per file: name, timestamp, Play).
 
+use super::thumbnails::Thumbnailer;
 use gtk4::{self as gtk, gio};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Filename stem prefix produced by [`crate::files::naming::plan_output`].
-const PREFIX: &str = "screen-recording-";
+const PREFIX: &str = crate::files::naming::RECORDING_PREFIX;
 /// Rows shown in the window's recent list.
 const RECENT_LIMIT: usize = 5;
 
 /// Is `p` a finished recording file? In-progress `….mp4.part` siblings are
 /// excluded by the extension check (their extension is `part`).
 pub fn is_recording(p: &Path) -> bool {
-    p.is_file()
-        && p.file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|n| n.starts_with(PREFIX))
-        && p.extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|e| matches!(e, "mp4" | "webm"))
+    crate::files::naming::is_recording_path(p)
 }
 
 /// Newest `limit` recordings in `dir`, mtime descending. A missing or
@@ -119,9 +113,18 @@ pub(super) fn play_file(path: &Path) {
     }
 }
 
-/// One row in the recent list: filename (ellipsized) + timestamp + Play.
-fn row(path: &Path) -> gtk::Box {
+/// One row in the recent list: thumbnail + filename (ellipsized) +
+/// timestamp + Play. The thumbnail is generated off-thread; until it
+/// arrives the picture is simply empty.
+fn row(path: &Path, thumbs: &Thumbnailer) -> gtk::Box {
     let meta = fs::metadata(path).ok();
+    let preview = gtk::Picture::builder()
+        .width_request(96)
+        .height_request(54)
+        .content_fit(gtk::ContentFit::Cover)
+        .css_classes(["thumbnail"])
+        .build();
+    thumbs.request(path, &preview);
     let name = gtk::Label::builder()
         .label(&*path.file_name().unwrap_or_default().to_string_lossy())
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
@@ -149,6 +152,7 @@ fn row(path: &Path) -> gtk::Box {
         .margin_start(10)
         .margin_end(10)
         .build();
+    row.append(&preview);
     row.append(&name);
     row.append(&when);
     row.append(&play);
@@ -161,6 +165,7 @@ pub(super) struct RecentRecordings {
     pub widget: adw::PreferencesGroup,
     list: gtk::ListBox,
     dir: PathBuf,
+    thumbs: Thumbnailer,
 }
 
 impl RecentRecordings {
@@ -175,7 +180,12 @@ impl RecentRecordings {
             .title("Recent recordings")
             .build();
         widget.add(&list);
-        let r = Self { widget, list, dir };
+        let r = Self {
+            widget,
+            list,
+            dir,
+            thumbs: Thumbnailer::new(),
+        };
         r.refresh();
         r
     }
@@ -186,9 +196,10 @@ impl RecentRecordings {
         while let Some(row) = self.list.first_child() {
             self.list.remove(&row);
         }
+        self.thumbs.reset();
         let paths = list_recent(&self.dir, RECENT_LIMIT);
         for p in &paths {
-            self.list.append(&row(p));
+            self.list.append(&row(p, &self.thumbs));
         }
         self.widget.set_visible(!paths.is_empty());
     }

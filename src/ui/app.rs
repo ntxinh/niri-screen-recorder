@@ -11,11 +11,12 @@
 use super::controller::{GuiController, UiCommand, UiEvent};
 use super::format::{format_elapsed, outputs_model, select_index, state_label};
 use super::recordings::{open_folder, play_file, RecentRecordings};
+use super::shortcuts::{Action, Shortcuts};
 use crate::app::pidfile::read_pidfile;
 use crate::app::state::AppState;
 use crate::cli::commands::check_preferred_backend;
 use crate::config::settings::{self, expand_tilde, Quality, Target};
-use gtk4::{self as gtk, gio, glib};
+use gtk4::{self as gtk, gdk, gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -26,6 +27,16 @@ use std::time::{Duration, Instant};
 
 const APP_ID: &str = "io.github.niri_recorder";
 pub(super) const FPS_CHOICES: [u32; 3] = [24, 30, 60];
+/// Delay choices offered by the settings dialog.
+pub(super) const COUNTDOWN_CHOICES: [u32; 4] = [0, 3, 5, 10];
+
+/// Arguments captured when a countdown starts, dispatched when it ends.
+struct PendingStart {
+    target: Target,
+    output: Option<String>,
+    fps: u32,
+    quality: Quality,
+}
 
 /// Build the application and run the main loop; returns the exit code
 /// passed to the process once the loop ends. `adw::Application::new`
@@ -73,6 +84,14 @@ pub(super) struct Ui {
     /// The open settings dialog, if any — a second gear-click re-presents
     /// it instead of stacking a duplicate.
     pub(super) settings_dialog: Option<adw::PreferencesDialog>,
+    /// Seconds left before a delayed start; `None` when no countdown runs.
+    countdown_left: Option<u32>,
+    pending_start: Option<PendingStart>,
+    countdown_seconds: u32,
+    /// In-window start/stop accelerators (settings-driven).
+    shortcuts: Shortcuts,
+    /// Encoder names probed by the worker; used by the settings dialog.
+    pub(super) codecs: Vec<String>,
     ctl: Rc<GuiController>,
     /// Weak so the Rc<Ui> held by window callbacks doesn't create a
     /// window→Ui→window cycle.
@@ -100,6 +119,7 @@ impl Ui {
         match ev {
             UiEvent::BackendReady(caps) => {
                 self.backend_ready = true;
+                self.codecs = caps.codecs.clone();
                 self.populate_outputs(&outputs_model(&caps.outputs));
             }
             UiEvent::BackendError(msg) => {
@@ -195,6 +215,86 @@ impl Ui {
             self.backend_error = check_preferred_backend(s).err();
         }
         self.last_output.clone_from(&s.last_output);
+        self.countdown_seconds = s.countdown_seconds;
+        self.shortcuts.set(&s.start_shortcut, &s.stop_shortcut);
+        self.refresh();
+    }
+
+    /// Everything Start needs, short of the backend having probed.
+    fn can_start(&self) -> bool {
+        matches!(
+            self.state,
+            AppState::Idle | AppState::Completed(_) | AppState::Failed(_)
+        ) && self.countdown_left.is_none()
+            && self.backend_ready
+            && self.backend_error.is_none()
+            && self.external_pid.is_none()
+    }
+
+    /// Primary action / Start shortcut: record, stop, or cancel countdown.
+    fn toggle(&mut self) {
+        if matches!(self.state, AppState::Recording { .. }) {
+            self.ctl.request_stop();
+        } else if self.countdown_left.is_some() {
+            self.cancel_countdown();
+        } else {
+            self.begin_start();
+        }
+    }
+
+    /// Start (after the configured countdown, if any). Mirrors the old
+    /// button handler: selections are frozen now, not when the timer ends.
+    fn begin_start(&mut self) {
+        if !self.can_start() {
+            return;
+        }
+        let (target, output, fps, quality) = self.selections();
+        self.detail = None;
+        if let Some(name) = &output {
+            // FR-09: remember the recorded display; a stale name falls
+            // back to index 0 on next launch.
+            self.last_output = Some(name.clone());
+            let mut s = settings::load();
+            s.last_output = Some(name.clone());
+            if let Err(e) = settings::save(&s) {
+                eprintln!("niri-recorder: cannot save settings: {e}");
+            }
+        }
+        if self.countdown_seconds > 0 {
+            self.pending_start = Some(PendingStart {
+                target,
+                output,
+                fps,
+                quality,
+            });
+            self.countdown_left = Some(self.countdown_seconds);
+            self.refresh();
+        } else {
+            self.ctl.request_start(target, output, fps, quality);
+        }
+    }
+
+    /// Abort a pending start; nothing was requested yet.
+    fn cancel_countdown(&mut self) {
+        self.countdown_left = None;
+        self.pending_start = None;
+        self.refresh();
+    }
+
+    /// One countdown step, driven by the window's 1 s timer.
+    fn tick_countdown(&mut self) {
+        let Some(left) = self.countdown_left else {
+            return;
+        };
+        if left > 1 {
+            self.countdown_left = Some(left - 1);
+            self.refresh();
+            return;
+        }
+        self.countdown_left = None;
+        if let Some(p) = self.pending_start.take() {
+            self.ctl.request_start(p.target, p.output, p.fps, p.quality);
+        }
         self.refresh();
     }
 
@@ -207,7 +307,9 @@ impl Ui {
         );
         let recording = matches!(self.state, AppState::Recording { .. });
         let is_region = self.target_row.selected() == 1;
+        let countdown = self.countdown_left;
         let can_start = idleish
+            && countdown.is_none()
             && self.backend_ready
             && self.backend_error.is_none()
             && self.external_pid.is_none();
@@ -221,21 +323,26 @@ impl Ui {
             &self.fps_row,
             &self.quality_row,
         ] {
-            row.set_sensitive(idleish);
+            row.set_sensitive(idleish && countdown.is_none());
         }
-        self.output_row.set_sensitive(idleish && !is_region);
-        self.primary.set_label(match &self.state {
-            AppState::Recording { .. } => "Stop Recording",
+        self.output_row
+            .set_sensitive(idleish && countdown.is_none() && !is_region);
+        self.primary.set_label(match (&self.state, countdown) {
+            (_, Some(_)) => "Cancel countdown",
+            (AppState::Recording { .. }, _) => "Stop Recording",
             // Busy states: Start is insensitive, so don't show a label
             // that reads like it became clickable again.
-            AppState::Stopping { .. } => "Stopping…",
-            AppState::SelectingRegion => "Selecting region…",
-            AppState::Starting => "Starting…",
+            (AppState::Stopping { .. }, _) => "Stopping…",
+            (AppState::SelectingRegion, _) => "Selecting region…",
+            (AppState::Starting, _) => "Starting…",
             _ => "Start Recording",
         });
-        self.primary.set_sensitive(can_start || recording);
+        self.primary
+            .set_sensitive(can_start || recording || countdown.is_some());
 
-        let status = if let Some(err) = &self.backend_error {
+        let status = if let Some(left) = countdown {
+            format!("Starting in {left}s…")
+        } else if let Some(err) = &self.backend_error {
             err.clone()
         } else if let Some(pid) = self.external_pid {
             format!("recording (pid {pid}) — controlled by another session")
@@ -438,6 +545,11 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         last_output: settings.last_output.clone(),
         pending_quit: false,
         settings_dialog: None,
+        countdown_left: None,
+        pending_start: None,
+        countdown_seconds: settings.countdown_seconds,
+        shortcuts: Shortcuts::new(&settings.start_shortcut, &settings.stop_shortcut),
+        codecs: Vec::new(),
         ctl,
         window: window.downgrade(),
         recent,
@@ -488,27 +600,57 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let primary = ui.borrow().primary.clone();
     {
         let ui = Rc::clone(&ui);
-        primary.connect_clicked(move |_| {
+        primary.connect_clicked(move |_| ui.borrow_mut().toggle());
+    }
+
+    // In-window accelerators. Capture phase so a focused button can't
+    // swallow the key; Esc cancels a running countdown.
+    {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let ui = Rc::clone(&ui);
+        keys.connect_key_pressed(move |_, key, _, mods| {
             let mut ui = ui.borrow_mut();
-            if matches!(ui.state, AppState::Recording { .. }) {
-                ui.ctl.request_stop();
-            } else {
-                let (target, output, fps, quality) = ui.selections();
-                ui.detail = None;
-                if let Some(name) = &output {
-                    // FR-09: remember the recorded display; a stale name
-                    // falls back to index 0 on next launch.
-                    ui.last_output = Some(name.clone());
-                    let mut s = settings::load();
-                    s.last_output = Some(name.clone());
-                    if let Err(e) = settings::save(&s) {
-                        eprintln!("niri-recorder: cannot save settings: {e}");
-                    }
+            if key == gdk::Key::Escape && ui.countdown_left.is_some() {
+                ui.cancel_countdown();
+                return glib::Propagation::Stop;
+            }
+            match ui.shortcuts.action(key, mods) {
+                Some(Action::Start) => {
+                    ui.begin_start();
+                    glib::Propagation::Stop
                 }
-                ui.ctl.request_start(target, output, fps, quality);
+                Some(Action::Stop) => {
+                    if ui.countdown_left.is_some() {
+                        ui.cancel_countdown();
+                    } else if matches!(ui.state, AppState::Recording { .. }) {
+                        ui.ctl.request_stop();
+                    }
+                    glib::Propagation::Stop
+                }
+                None => glib::Propagation::Proceed,
             }
         });
+        window.add_controller(keys);
     }
+
+    // Countdown timer: one step per second while a delayed start runs.
+    glib::timeout_add_seconds_local(
+        1,
+        glib::clone!(
+            #[weak]
+            ui,
+            #[upgrade_or]
+            glib::ControlFlow::Break,
+            move || {
+                let mut ui = ui.borrow_mut();
+                if ui.countdown_left.is_some() {
+                    ui.tick_countdown();
+                }
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
 
     // Settings dialog over the main window; a second click re-presents
     // the open one rather than stacking a duplicate.
@@ -520,7 +662,11 @@ fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
             match &u.settings_dialog {
                 Some(d) => d.present(Some(&window)),
                 None => {
-                    u.settings_dialog = Some(super::settings::present(&window, &ui));
+                    // `present` must not borrow `ui` while this mutable
+                    // borrow is live (RefCell would panic); hand it the
+                    // probed encoders directly.
+                    let codecs = u.codecs.clone();
+                    u.settings_dialog = Some(super::settings::present(&window, &ui, &codecs));
                 }
             }
         });

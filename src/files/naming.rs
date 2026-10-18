@@ -9,6 +9,22 @@ use time::OffsetDateTime;
 /// Maximum collision suffix (`-1` … `-99`) tried after the base name.
 const MAX_SUFFIX: u32 = 99;
 
+/// Stem prefix of every finished recording this app writes.
+pub const RECORDING_PREFIX: &str = "screen-recording-";
+
+/// Is `p` a finished recording file? In-progress `….mp4.part` siblings
+/// are excluded by the extension check (their extension is `part`), as
+/// are renamed/foreign files without the prefix.
+pub fn is_recording_path(p: &Path) -> bool {
+    p.is_file()
+        && p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(RECORDING_PREFIX))
+        && p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "mp4" | "webm"))
+}
+
 /// Recording output plan: write to `part_path`, then [`finalize`].
 pub struct OutputPlan {
     pub part_path: PathBuf,

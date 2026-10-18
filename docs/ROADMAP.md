@@ -23,6 +23,22 @@ Phases 0–2; Plan B is the GUI.
   `make uninstall` (binary + desktop entry + icon to `~/.local`),
   launcher verified, Niri keybinding examples in README. RPM skipped —
   paths still stabilizing.
+- **Phase 6 — Optional enhancements** ✅ (post-MVP scope):
+  - configurable in-window shortcuts (`start_shortcut`/`stop_shortcut`),
+  - countdown before capture (0/3/5/10 s, cancellable),
+  - recording-history thumbnails (cached `ffmpeg` extraction),
+  - opt-in cleanup rules (`cleanup_enabled`, count/age),
+  - encoder presets and hardware preference with software fallback,
+  - foreground daemon with Unix-socket CLI control
+    (`niri-recorder daemon`; `docs/DAEMON.md`),
+  - DankMaterialShell bar/Control Center plugin in `data/dms-plugin/`
+    (manifest discovery and QML load verified in DMS 1.6; bar rendering
+    and clicks remain manual checks — `docs/DMS.md`).
+
+  Cursor visibility is **not implemented**: wf-recorder 0.6.0 has no
+  cursor flag, so the spec's "if supported by the backend" condition is
+  not met. Hardware encoding is selectable but unverified on CometLake
+  iHD; the default stays software.
 
 ## Next
 
@@ -33,11 +49,8 @@ Phases 0–2; Plan B is the GUI.
 
 ## Remaining phases (spec §18)
 
-- **Phase 6 — Optional enhancements** (post-MVP only): DMS integration,
-  configurable shortcuts, background daemon with robust CLI control,
-  recording history with thumbnails, opt-in cleanup rules, countdown and
-  cursor controls if the backend supports them, selectable encoder
-  presets / hardware-encoding preference.
+None — Phases 0–6 are implemented. Phase 4's manual-verification items
+remain open (see `docs/WAYLAND-NIRI-COMPATIBILITY.md`).
 
 ## Deliberately not planned
 

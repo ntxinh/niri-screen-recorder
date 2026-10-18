@@ -1,0 +1,17 @@
+[Unit]
+Description=niri-recorder control daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# The daemon runs in the foreground and needs the compositor's Wayland
+# socket (import it into the user manager: `systemctl --user
+# import-environment WAYLAND_DISPLAY`). It never captures until a client
+# asks it to.
+ExecStart=/usr/bin/env niri-recorder daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

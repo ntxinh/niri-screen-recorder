@@ -28,6 +28,7 @@ impl CaptureBackend for FakeBackend {
     }
 
     fn start(&self, req: CaptureRequest) -> Result<CaptureSession, CaptureError> {
+        let _ = &req.encoder;
         // Seed .part so a quick stop still has content to finalize.
         std::fs::write(&req.part_path, b"fake-frames\n").map_err(CaptureError::Spawn)?;
         let child = spawn(
@@ -138,6 +139,38 @@ fn multiple_outputs_require_explicit_name() {
     rec.start(Target::Display, Some("HDMI-A-1".into())).unwrap();
     assert!(matches!(rec.state(), AppState::Recording { .. }));
     stop_clean(&mut rec);
+}
+
+fn recorder_with_last_output(dir: &Path, last: &str) -> Recorder<FakeBackend> {
+    let settings = Settings {
+        output_directory: dir.to_str().unwrap().into(),
+        last_output: Some(last.into()),
+        ..Settings::default()
+    };
+    Recorder::new(
+        FakeBackend {
+            outputs: vec!["DP-1".into(), "HDMI-A-1".into()],
+            child_argv: vec!["bash".into(), "tests/fake_child.sh".into()],
+        },
+        settings,
+    )
+}
+
+#[test]
+fn multiple_outputs_fall_back_to_last_recorded_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rec = recorder_with_last_output(dir.path(), "HDMI-A-1");
+    rec.start(Target::Display, None).unwrap();
+    assert!(matches!(rec.state(), AppState::Recording { .. }));
+    stop_clean(&mut rec);
+}
+
+#[test]
+fn stale_last_output_still_requires_explicit_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rec = recorder_with_last_output(dir.path(), "GONE-1");
+    assert!(rec.start(Target::Display, None).is_err());
+    assert!(matches!(rec.state(), AppState::Idle));
 }
 
 #[test]

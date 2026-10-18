@@ -2,9 +2,9 @@
 
 use crate::capture::backend::{CaptureBackend, CaptureError, CaptureSession};
 use crate::capture::capabilities::CaptureCapabilities;
+use crate::capture::encoders;
 use crate::capture::process::spawn;
 use crate::capture::request::{CaptureRequest, CaptureTarget};
-use crate::config::settings::Quality;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -64,6 +64,10 @@ impl WfRecorder {
     /// Full argument vector for one capture; pure and unit-testable.
     /// Never includes `-a`/`--audio` — this backend is video-only.
     pub fn argv(req: &CaptureRequest) -> Vec<String> {
+        let codec = req
+            .encoder
+            .clone()
+            .unwrap_or_else(|| Self::codec(req.part_path.as_path()).to_string());
         let mut a = vec![
             "wf-recorder".to_string(),
             "-f".to_string(),
@@ -72,22 +76,13 @@ impl WfRecorder {
             "-m".to_string(),
             Self::muxer(req.part_path.as_path()).to_string(),
             "-c".to_string(),
-            Self::codec(req.part_path.as_path()).to_string(),
+            codec.clone(),
             "-r".to_string(),
             req.fps.to_string(),
         ];
-        if let Quality::High = req.quality {
-            // openh264 has no bitrate priv-opt; `b` is the AVCodecContext
-            // bitrate AVOption (verified: encoder logs 10000 kb/s target).
-            a.extend([
-                "-p".into(),
-                "b=10000000".into(),
-                "-p".into(),
-                "rc_mode=bitrate".into(),
-                "-p".into(),
-                "allow_skip_frames=true".into(),
-            ]);
-        }
+        // openh264 keeps its verified AVOptions; other codecs get only
+        // the generic bitrate option (see `encoders::quality_options`).
+        a.extend(encoders::quality_options(&codec, req.quality));
         match &req.target {
             CaptureTarget::Display(name) => a.extend(["-o".into(), name.clone()]),
             CaptureTarget::Region(g) => a.extend(["-g".into(), g.to_wf_arg()]),
@@ -122,10 +117,19 @@ impl WfRecorder {
 
 impl CaptureBackend for WfRecorder {
     fn capabilities(&self) -> Result<CaptureCapabilities, CaptureError> {
+        // Probe ffmpeg once per process; an unavailable ffmpeg yields an
+        // empty list and encoder `auto` still works via the constants.
+        // Only H.264 encoders are offered: the app always writes MP4, and
+        // VP8/VP9/Theora cannot be trusted in an MP4 muxer.
+        let codecs = encoders::available()
+            .iter()
+            .filter(|name| name.contains("264"))
+            .cloned()
+            .collect();
         Ok(CaptureCapabilities {
             outputs: Self::list_outputs(),
             region: self.slurp_available,
-            codecs: vec!["libopenh264".into(), "libvpx-vp9".into()],
+            codecs,
         })
     }
 

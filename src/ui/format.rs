@@ -37,6 +37,32 @@ pub fn outputs_model(outputs: &[String]) -> Vec<String> {
     v
 }
 
+/// Settings-dialog encoder choices as `(stored value, label)`. The two
+/// presets always exist; explicit encoders come from the backend probe
+/// (already filtered to H.264/VP9/AV1) and are sorted for stability.
+pub fn encoder_choices(codecs: &[String]) -> Vec<(String, String)> {
+    let mut choices = vec![
+        ("auto".to_string(), "Auto (software)".to_string()),
+        ("hardware".to_string(), "Hardware (auto)".to_string()),
+    ];
+    let mut names = codecs.to_vec();
+    names.sort();
+    names.dedup();
+    for name in names {
+        choices.push((name.clone(), name));
+    }
+    choices
+}
+
+/// Row index for a stored encoder value; an unknown value (e.g. an
+/// encoder this machine no longer lists) falls back to Auto.
+pub fn encoder_index(choices: &[(String, String)], current: &str) -> u32 {
+    choices
+        .iter()
+        .position(|(value, _)| value == current)
+        .unwrap_or(0) as u32
+}
+
 /// FR-09: index of `last_output` in the (sorted, deduped) model, else 0.
 /// A stale last_output (display gone) falls back to the first entry.
 pub fn select_index(outputs: &[String], last_output: Option<&str>) -> u32 {
@@ -49,6 +75,19 @@ pub fn select_index(outputs: &[String], last_output: Option<&str>) -> u32 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn encoder_choices_and_index() {
+        let choices = encoder_choices(&["h264_vaapi".into(), "libopenh264".into()]);
+        assert_eq!(choices[0].0, "auto");
+        assert_eq!(choices[1].0, "hardware");
+        assert_eq!(choices[2].0, "h264_vaapi");
+        assert_eq!(choices[3].0, "libopenh264");
+        assert_eq!(encoder_index(&choices, "hardware"), 1);
+        assert_eq!(encoder_index(&choices, "h264_vaapi"), 2);
+        assert_eq!(encoder_index(&choices, "gone"), 0);
+        assert_eq!(encoder_choices(&[]).len(), 2);
+    }
 
     #[test]
     fn elapsed_formats() {

@@ -329,6 +329,8 @@ fn stop_recording(
     }
     match (rec.stop(), child_died) {
         (Ok(path), false) => {
+            // Retention runs on the worker, never the GTK main thread.
+            crate::files::retention::apply_for_settings(&settings::load());
             release_pidfile(we_own_pidfile);
             emit(tx, UiEvent::Completed(path));
         }

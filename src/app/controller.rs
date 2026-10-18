@@ -6,6 +6,7 @@
 
 use crate::app::state::{transition, AppState, Event};
 use crate::capture::backend::{CaptureBackend, CaptureError, CaptureSession};
+use crate::capture::encoders;
 use crate::capture::process::spawn;
 use crate::capture::request::{CaptureRequest, CaptureTarget, Geometry};
 use crate::config::settings::{expand_tilde, Settings, Target};
@@ -195,19 +196,30 @@ impl<B: CaptureBackend> Recorder<B> {
         }
     }
 
-    /// Display name: the explicit `output`, or the sole probed output.
+    /// Display name: the explicit `output`, the sole probed output, or —
+    /// when several outputs exist — the last display recorded (FR-09,
+    /// written by the GUI and by CLI starts with `--output`). This lets
+    /// keybinds/DMS start a sensible display on multi-monitor setups.
     fn resolve_output(&self, output: Option<String>) -> Result<String, CaptureError> {
         if let Some(name) = output {
             return Ok(name);
         }
         let mut outputs = self.backend.capabilities()?.outputs;
         match outputs.len() {
-            1 => Ok(outputs.remove(0)),
-            0 => Err(CaptureError::Unsupported("no display detected".into())),
-            _ => Err(CaptureError::Unsupported(
-                "multiple displays; --output required".into(),
-            )),
+            1 => return Ok(outputs.remove(0)),
+            0 => return Err(CaptureError::Unsupported("no display detected".into())),
+            _ => {}
         }
+        if let Some(last) = &self.settings.last_output {
+            if outputs.iter().any(|name| name == last) {
+                return Ok(last.clone());
+            }
+        }
+        Err(CaptureError::Unsupported(
+            "multiple displays; --output required (or record once with --output to \
+             remember a default)"
+                .into(),
+        ))
     }
 
     /// Run `slurp` to completion and return its stdout geometry.
@@ -272,11 +284,27 @@ impl<B: CaptureBackend> Recorder<B> {
                 return Err(CaptureError::Spawn(e));
             }
         };
+        // Resolve the encoder preference against what ffmpeg lists. `auto`
+        // and `software` skip the probe entirely (a start stays cheap), and
+        // an unavailable hardware/explicit encoder falls back to software.
+        let available = if encoders::needs_probe(&self.settings.encoder) {
+            self.backend
+                .capabilities()
+                .map(|c| c.codecs)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let choice = encoders::resolve(&self.settings.encoder, &available, "mp4");
+        if let Some(w) = &choice.warning {
+            tracing::warn!(encoder = %self.settings.encoder, "{w}");
+        }
         let req = CaptureRequest {
             target,
             fps: self.settings.default_fps,
             quality: self.settings.quality,
             part_path: plan.part_path,
+            encoder: Some(choice.codec),
         };
         match self.backend.start(req) {
             Ok(session) => {

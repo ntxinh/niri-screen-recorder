@@ -35,6 +35,8 @@ enum Cmd {
     Status,
     /// Print environment/tool/backend diagnostics.
     Diagnostics,
+    /// Run the background control daemon in the foreground.
+    Daemon,
 }
 
 /// Clap-facing copy of [`Target`]; kept separate so `ValueEnum` isn't
@@ -73,5 +75,6 @@ pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> ! {
         Some(Cmd::Stop) => commands::stop(),
         Some(Cmd::Status) => commands::status(),
         Some(Cmd::Diagnostics) => commands::diagnostics(),
+        Some(Cmd::Daemon) => crate::daemon::run(),
     }
 }

@@ -1,0 +1,12 @@
+{
+  "id": "niriRecorder",
+  "name": "Niri Recorder",
+  "description": "Start/stop niri-recorder and show whether a recording is active",
+  "version": "0.1.0",
+  "author": "niri-recorder",
+  "icon": "radio_button_checked",
+  "type": "widget",
+  "capabilities": ["dankbar-widget", "control-center"],
+  "component": "./NiriRecorder.qml",
+  "requires_dms": ">=1.5.0"
+}

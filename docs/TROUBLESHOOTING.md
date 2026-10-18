@@ -21,9 +21,11 @@ The backend refused the request. Produced messages:
 - `no display detected` — `niri msg --json outputs` returned nothing.
   Confirm you're inside a Niri session (`echo $WAYLAND_DISPLAY`, run
   `niri msg outputs`).
-- `multiple displays; --output required` — pass
-  `niri-recorder start --output DP-3` with one of the names from
-  `diagnostics`.
+- `multiple displays; --output required` — no remembered display
+  matches the enabled outputs. Pass `niri-recorder start --output DP-3`
+  with a name from `diagnostics`; that choice is saved as `last_output`
+  and later bare starts (keybinds, DMS) reuse it while the output is
+  still enabled.
 - `cannot start while …` / `cannot stop while …` — internal state guard;
   a second start on the same process, or stop with nothing running.
 
@@ -136,6 +138,48 @@ workspaces during capture to get real frame counts.
 Normal: SIGINT tells wf-recorder to finalize, and its encoder/muxer
 flush takes a few seconds for mp4. The `.part` renames to the final
 name once it exits.
+
+### Daemon problems
+
+- **`daemon already running on …`** — another daemon is listening on
+  `$XDG_RUNTIME_DIR/niri-recorder/control.sock`. Use
+  `niri-recorder diagnostics` to see its state; stop it with SIGINT/SIGTERM
+  before starting a second one.
+- **`invalid daemon response: …`** — something is listening on the
+  socket but is not this daemon. The CLI refuses to fall back to a
+  second recorder; remove the stale socket only after confirming no
+  daemon is running.
+- **`start` returns but `status` says idle** — the daemon may have
+  exited; check `systemctl --user status niri-recorder-daemon` (unit in
+  `data/niri-recorder-daemon.service`).
+- **`start` fails with `already recording (pid N)`** — a GUI or
+  foreground recorder owns the pidfile. Stop that session first; the
+  daemon never steals a live pidfile.
+
+### Encoder selection
+
+`encoder = "hardware"` falls back to software when `ffmpeg -encoders`
+lists no matching hardware encoder. If it *is* listed but the capture
+still fails (e.g. `Failed to create processing pipeline config`), the
+GPU/driver cannot run it — this is expected on CometLake iHD with VAAPI.
+Set `encoder = "software"` or `"auto"` and record again. `diagnostics`
+shows the probed encoder list in the backend line.
+
+### No thumbnails in the recent list
+
+Thumbnails require the `ffmpeg` binary (not just `ffprobe`) and the
+recent list only shows finished `screen-recording-*.(mp4|webm)` files.
+Generation errors are silent by design; delete
+`$XDG_CACHE_HOME/niri-recorder/thumbnails/` to force regeneration, and
+check `ffmpeg -version`.
+
+### In-window shortcut does nothing
+
+Shortcuts only fire while the recorder window has focus (Wayland has no
+portable global hotkey). Verify the GTK accelerator syntax in
+`config.toml` (e.g. `<Control>r`); an invalid value logs a warning via
+`tracing` and is treated as disabled. For a global shortcut, bind
+`niri-recorder start|stop` in niri instead.
 
 ### Config warnings
 

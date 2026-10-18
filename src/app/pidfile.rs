@@ -21,7 +21,7 @@ pub struct PidEntry {
     pub pid: u32,
 }
 
-fn runtime_dir() -> PathBuf {
+pub(crate) fn runtime_dir() -> PathBuf {
     if let Some(dir) = BaseDirs::new().and_then(|b| b.runtime_dir().map(Path::to_path_buf)) {
         return dir.join("niri-recorder");
     }
