@@ -63,12 +63,14 @@ pub fn try_start(
     output: Option<String>,
     fps: u32,
     quality: crate::config::settings::Quality,
+    notify: Option<bool>,
 ) -> Option<Result<Response, String>> {
     request(&Request::Start {
         target: Some(target),
         output,
         fps: Some(fps),
         quality: Some(quality),
+        notify,
     })
 }
 
@@ -96,6 +98,7 @@ mod tests {
             output: Some("DP-3".into()),
             fps: Some(30),
             quality: Some(Quality::High),
+            notify: Some(true),
         })
         .unwrap();
         assert_eq!(
@@ -105,6 +108,7 @@ mod tests {
                 output: Some("DP-3".into()),
                 fps: Some(30),
                 quality: Some(Quality::High),
+                notify: Some(true),
             }
         );
     }

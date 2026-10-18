@@ -17,6 +17,8 @@ pub enum Request {
         fps: Option<u32>,
         #[serde(default)]
         quality: Option<Quality>,
+        #[serde(default)]
+        notify: Option<bool>,
     },
     Stop,
     Status,
@@ -121,6 +123,7 @@ mod tests {
             output: None,
             fps: Some(60),
             quality: Some(Quality::High),
+            notify: Some(true),
         };
         let line = serde_json::to_string(&start).unwrap();
         assert_eq!(parse_request(&line).unwrap(), start);
@@ -137,7 +140,8 @@ mod tests {
                 target: None,
                 output: None,
                 fps: None,
-                quality: None
+                quality: None,
+                notify: None,
             }
         );
     }

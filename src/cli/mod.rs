@@ -28,10 +28,22 @@ enum Cmd {
         /// Ignored for `--target region`.
         #[arg(long)]
         output: Option<String>,
+        /// Enable desktop notifications (overrides config).
+        #[arg(long, overrides_with = "no_notify")]
+        notify: bool,
+        /// Disable desktop notifications (overrides config).
+        #[arg(long, overrides_with = "notify")]
+        no_notify: bool,
     },
     /// Ask the running recorder (from the pidfile) to stop.
-    Stop,
-    /// Show whether a recording is in progress.
+    Stop {
+        /// Enable desktop notifications (overrides config).
+        #[arg(long, overrides_with = "no_notify")]
+        notify: bool,
+        /// Disable desktop notifications (overrides config).
+        #[arg(long, overrides_with = "notify")]
+        no_notify: bool,
+    },
     Status,
     /// Print environment/tool/backend diagnostics.
     Diagnostics,
@@ -71,10 +83,24 @@ pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> ! {
             // itself (code 1) when no display is available.
             std::process::exit(i32::from(crate::ui::run().get()));
         }
-        Some(Cmd::Start { target, output }) => commands::start(target, output),
-        Some(Cmd::Stop) => commands::stop(),
+        Some(Cmd::Start {
+            target,
+            output,
+            notify,
+            no_notify,
+        }) => commands::start(target, output, notify, no_notify),
+        Some(Cmd::Stop { notify, no_notify }) => commands::stop(notify, no_notify),
         Some(Cmd::Status) => commands::status(),
         Some(Cmd::Diagnostics) => commands::diagnostics(),
         Some(Cmd::Daemon) => crate::daemon::run(),
+    }
+}
+
+/// Resolve notification preference from CLI flags and config default.
+pub(crate) fn resolve_notify(notify: bool, no_notify: bool, default: bool) -> bool {
+    match (notify, no_notify) {
+        (true, _) => true,
+        (_, true) => false,
+        (false, false) => default,
     }
 }

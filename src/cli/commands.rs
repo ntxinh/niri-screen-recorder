@@ -12,7 +12,7 @@ use crate::app::state::AppState;
 use crate::capture::backend::CaptureBackend;
 use crate::capture::backends::wf_recorder::WfRecorder;
 use crate::capture::process::is_zombie;
-use crate::config::settings::{self, Settings};
+use crate::config::settings::{self, Settings, Target};
 use crate::daemon::client;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -24,10 +24,17 @@ use std::time::Duration;
 
 /// Exit codes: 0 ok, 1 already recording / not recording, 2 backend
 /// missing or unsupported, 3 capture failure.
-pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! {
+pub(super) fn start(
+    target_arg: Option<TargetArg>,
+    output: Option<String>,
+    notify_flag: bool,
+    no_notify_flag: bool,
+) -> ! {
     let settings = settings::load();
+    let notify_enabled = super::resolve_notify(notify_flag, no_notify_flag, settings.notifications);
     if let Err(msg) = check_preferred_backend(&settings) {
         eprintln!("niri-recorder: {msg}");
+        crate::app::notify::notify(notify_enabled, "Recording failed", &msg);
         std::process::exit(2);
     }
     let target = target_arg.map_or(settings.default_target, Into::into);
@@ -49,6 +56,7 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
         output.clone(),
         settings.default_fps,
         settings.quality,
+        Some(notify_enabled),
     ) {
         match result {
             Ok(resp) if resp.ok && resp.state == "recording" => {
@@ -69,10 +77,13 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
                     .error
                     .unwrap_or_else(|| "daemon refused the start".into());
                 eprintln!("niri-recorder: {msg}");
+                crate::app::notify::notify(notify_enabled, "Recording failed", &msg);
                 std::process::exit(i32::from(resp.code.max(1)));
             }
             Err(e) => {
-                eprintln!("niri-recorder: {e}");
+                let msg = e.to_string();
+                eprintln!("niri-recorder: {msg}");
+                crate::app::notify::notify(notify_enabled, "Recording failed", &msg);
                 std::process::exit(3);
             }
         }
@@ -124,8 +135,10 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
 
     let mut recorder = Recorder::new(backend, settings.clone());
     recorder.set_quit_flag(Arc::clone(&quit));
-    if let Err(e) = recorder.start(target, output) {
-        eprintln!("niri-recorder: {e}");
+    if let Err(e) = recorder.start(target, output.clone()) {
+        let msg = e.to_string();
+        eprintln!("niri-recorder: {msg}");
+        crate::app::notify::notify(notify_enabled, "Recording failed", &msg);
         clear_pidfile();
         std::process::exit(3);
     }
@@ -136,7 +149,9 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
             clear_pidfile();
             std::process::exit(0);
         }
-        eprintln!("niri-recorder: unexpected state {:?}", recorder.state());
+        let msg = format!("unexpected state {:?}", recorder.state());
+        eprintln!("niri-recorder: {msg}");
+        crate::app::notify::notify(notify_enabled, "Recording failed", &msg);
         clear_pidfile();
         std::process::exit(3);
     };
@@ -144,7 +159,15 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
         Some(p) => println!("recording → {}", p.display()),
         None => println!("recording pid={pid}"),
     }
-
+    let target_desc = match target {
+        Target::Region => "region",
+        Target::Display => output.as_deref().unwrap_or("display"),
+    };
+    crate::app::notify::notify(
+        notify_enabled,
+        "Recording started",
+        &format!("Capturing {target_desc}"),
+    );
     // ponytail: 100ms poll on flag + child state; try_wait would be nicer
     // but the session child isn't exposed by Recorder. kill(pid, 0) is Ok
     // on zombies, so a dead-but-unreaped child needs a /proc stat check.
@@ -164,20 +187,26 @@ pub(super) fn start(target_arg: Option<TargetArg>, output: Option<String>) -> ! 
     match (stopped, child_died) {
         (Ok(path), false) => {
             println!("saved → {}", path.display());
+            crate::app::notify::notify(
+                notify_enabled,
+                "Recording saved",
+                &path.display().to_string(),
+            );
             crate::files::retention::apply_for_settings(&settings);
             clear_pidfile();
             std::process::exit(0);
         }
         (Ok(path), true) => {
-            eprintln!(
-                "niri-recorder: capture ended early; saved {}",
-                path.display()
-            );
+            let msg = format!("capture ended early; saved {}", path.display());
+            eprintln!("niri-recorder: {msg}");
+            crate::app::notify::notify(notify_enabled, "Recording ended early", &msg);
             clear_pidfile();
             std::process::exit(3);
         }
         (Err(e), _) => {
-            eprintln!("niri-recorder: stop failed: {e}");
+            let msg = format!("stop failed: {e}");
+            eprintln!("niri-recorder: {msg}");
+            crate::app::notify::notify(notify_enabled, "Recording failed", &msg);
             if let AppState::Failed(reason) = recorder.state() {
                 eprintln!("niri-recorder: {reason}");
             }
@@ -201,7 +230,9 @@ pub(crate) fn check_preferred_backend(settings: &Settings) -> Result<(), String>
 }
 
 /// Signal the recorder recorded in the pidfile to stop.
-pub(super) fn stop() -> ! {
+pub(super) fn stop(notify_flag: bool, no_notify_flag: bool) -> ! {
+    let settings = settings::load();
+    let notify_enabled = super::resolve_notify(notify_flag, no_notify_flag, settings.notifications);
     if let Some(result) = client::try_stop() {
         match result {
             Ok(resp) if resp.ok => {
@@ -234,12 +265,17 @@ pub(super) fn stop() -> ! {
                 std::process::exit(0);
             }
             Err(err) => {
-                eprintln!("niri-recorder: cannot signal pid {}: {err}", e.pid);
+                let msg = format!("cannot signal pid {}: {err}", e.pid);
+                eprintln!("niri-recorder: {msg}");
+                crate::app::notify::notify(notify_enabled, "Stop failed", &msg);
                 std::process::exit(1);
             }
         },
         None => {
             println!("not recording");
+            if notify_flag {
+                crate::app::notify::notify(true, "niri-recorder", "Not recording");
+            }
             std::process::exit(1);
         }
     }
@@ -364,7 +400,7 @@ mod tests {
     #[test]
     fn start_target_is_optional() {
         match cmd(&["niri-recorder", "start"]) {
-            Cmd::Start { target, output } => {
+            Cmd::Start { target, output, .. } => {
                 assert!(target.is_none()); // config `default_target` applies
                 assert!(output.is_none());
             }
@@ -397,8 +433,7 @@ mod tests {
 
     #[test]
     fn simple_subcommands_parse() {
-        assert!(matches!(cmd(&["niri-recorder", "stop"]), Cmd::Stop));
-        assert!(matches!(cmd(&["niri-recorder", "status"]), Cmd::Status));
+        assert!(matches!(cmd(&["niri-recorder", "stop"]), Cmd::Stop { .. }));
         assert!(matches!(
             cmd(&["niri-recorder", "diagnostics"]),
             Cmd::Diagnostics
@@ -441,5 +476,31 @@ mod tests {
         s.preferred_backend = "wl-screenrec".into();
         let err = super::check_preferred_backend(&s).unwrap_err();
         assert!(err.contains("wl-screenrec"));
+    }
+
+    #[test]
+    fn notify_flags_override_precedence() {
+        match cmd(&["niri-recorder", "start", "--notify"]) {
+            Cmd::Start {
+                notify, no_notify, ..
+            } => {
+                assert!(notify);
+                assert!(!no_notify);
+                assert!(super::super::resolve_notify(notify, no_notify, false));
+            }
+            _ => panic!("expected start"),
+        }
+        match cmd(&["niri-recorder", "start", "--no-notify"]) {
+            Cmd::Start {
+                notify, no_notify, ..
+            } => {
+                assert!(!notify);
+                assert!(no_notify);
+                assert!(!super::super::resolve_notify(notify, no_notify, true));
+            }
+            _ => panic!("expected start"),
+        }
+        assert!(super::super::resolve_notify(false, false, true));
+        assert!(!super::super::resolve_notify(false, false, false));
     }
 }

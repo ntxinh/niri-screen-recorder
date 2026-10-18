@@ -286,11 +286,20 @@ fn start_recording(
             Target::Region => AppState::SelectingRegion,
         }),
     );
-    match rec.start(target, output) {
+    match rec.start(target, output.clone()) {
         Ok(()) => {
             let state = rec.state().clone();
             match &state {
                 AppState::Recording { .. } => {
+                    let target_desc = match target {
+                        Target::Region => "region",
+                        Target::Display => output.as_deref().unwrap_or("display"),
+                    };
+                    crate::app::notify::notify(
+                        settings.notifications,
+                        "Recording started",
+                        &format!("Capturing {target_desc}"),
+                    );
                     emit(
                         tx,
                         UiEvent::RecordingStarted {
@@ -330,20 +339,31 @@ fn stop_recording(
     match (rec.stop(), child_died) {
         (Ok(path), false) => {
             // Retention runs on the worker, never the GTK main thread.
-            crate::files::retention::apply_for_settings(&settings::load());
+            let s = settings::load();
+            crate::files::retention::apply_for_settings(&s);
             release_pidfile(we_own_pidfile);
+            crate::app::notify::notify(
+                s.notifications,
+                "Recording saved",
+                &path.display().to_string(),
+            );
             emit(tx, UiEvent::Completed(path));
         }
         (Ok(path), true) => {
             release_pidfile(we_own_pidfile);
-            emit(
-                tx,
-                UiEvent::Failed(format!("capture ended early; saved {}", path.display())),
+            let msg = format!("capture ended early; saved {}", path.display());
+            crate::app::notify::notify(
+                settings::load().notifications,
+                "Recording ended early",
+                &msg,
             );
+            emit(tx, UiEvent::Failed(msg));
         }
         (Err(e), _) => {
             release_pidfile(we_own_pidfile);
-            emit(tx, UiEvent::Failed(format!("stop failed: {e}")));
+            let msg = format!("stop failed: {e}");
+            crate::app::notify::notify(settings::load().notifications, "Recording failed", &msg);
+            emit(tx, UiEvent::Failed(msg));
         }
     }
 }

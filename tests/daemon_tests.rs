@@ -101,7 +101,8 @@ fn protocol_start_parses_defaults() {
             target: None,
             output: None,
             fps: None,
-            quality: None
+            quality: None,
+            notify: None,
         }
     );
 }

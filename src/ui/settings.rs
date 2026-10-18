@@ -103,6 +103,12 @@ pub(super) fn present(
             .unwrap_or(0) as u32,
     );
 
+    // --- notifications --------------------------------------------------
+    let notify_row = adw::SwitchRow::builder()
+        .title("Desktop notifications")
+        .subtitle("Show notifications when recording starts, stops, or fails")
+        .active(settings.borrow().notifications)
+        .build();
     // --- shortcuts ------------------------------------------------------
     let start_row = adw::EntryRow::builder()
         .title("Start shortcut")
@@ -221,6 +227,15 @@ pub(super) fn present(
             apply(&s);
         });
     }
+    {
+        let settings = Rc::clone(&settings);
+        let apply = Rc::clone(&apply);
+        notify_row.connect_active_notify(move |row| {
+            let mut s = settings.borrow_mut();
+            s.notifications = row.is_active();
+            apply(&s);
+        });
+    }
     // EntryRow.apply fires on Enter or the apply button, so partial input
     // never lands in config.toml.
     {
@@ -291,6 +306,7 @@ pub(super) fn present(
     group.add(&quality_row);
     group.add(&countdown_row);
 
+    group.add(&notify_row);
     let shortcut_group = adw::PreferencesGroup::builder()
         .title("Shortcuts")
         .description(

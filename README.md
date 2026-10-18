@@ -38,6 +38,7 @@ over `wl-screenrec` and the XDG portal.
 - Optional `niri-recorder daemon` for CLI control that survives workspace
   and focus changes; `start`/`stop`/`status` use it automatically
 - DankMaterialShell bar widget/Control Center tile in `data/dms-plugin/`
+- Desktop notifications on start, stop/saved, and failures (`notify-send`, enabled by default)
 - No audio capture, ever — the backend never passes an audio flag
 
 Known limitations: variable frame rate output (wlr-screencopy damage
@@ -93,10 +94,12 @@ shared with the CLI via the config file below.
 ### CLI
 
 ```text
-niri-recorder start                          # record sole/first display (foreground)
+niri-recorder start                          # record sole/first display (foreground, notifies)
 niri-recorder start --target display --output DP-3
 niri-recorder start --target region          # slurp region picker
+niri-recorder start --no-notify              # suppress desktop notifications
 niri-recorder stop                           # stop the recorder (daemon or pidfile)
+niri-recorder stop --no-notify               # stop without notification
 niri-recorder status                         # "recording pid=N" or "idle"
 niri-recorder diagnostics                    # tool versions, outputs, backend caps
 niri-recorder daemon                         # foreground control daemon (optional)
@@ -151,6 +154,7 @@ stop_shortcut = "<Control>s"  # empty disables
 cleanup_enabled = false       # opt-in retention, off by default
 cleanup_max_files = 20        # 0 = no count limit
 cleanup_max_age_days = 30     # 0 = no age limit
+notifications = true          # desktop notifications on start/stop/save
 # last_output is written automatically when a display is recorded.
 ```
 

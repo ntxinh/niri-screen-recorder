@@ -61,6 +61,7 @@ enum Command {
         output: Option<String>,
         fps: u32,
         quality: Quality,
+        notify: bool,
         reply: mpsc::Sender<Response>,
     },
     Stop {
@@ -222,6 +223,7 @@ fn handle_connection(
             output,
             fps,
             quality,
+            notify,
         }) => {
             let settings = settings::load();
             let (reply, rx) = mpsc::channel();
@@ -230,6 +232,7 @@ fn handle_connection(
                 output,
                 fps: fps.unwrap_or(settings.default_fps),
                 quality: quality.unwrap_or(settings.quality),
+                notify: notify.unwrap_or(settings.notifications),
                 reply,
             };
             if tx.send(cmd).is_err() {
@@ -269,7 +272,7 @@ fn worker(
 ) {
     let mut recorder: Option<Recorder<WfRecorder>> = None;
     let mut owns_pidfile = false;
-
+    let mut notify_enabled = false;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -296,6 +299,7 @@ fn worker(
                 output,
                 fps,
                 quality,
+                notify,
                 reply,
             }) => {
                 let response = if shutdown.load(Ordering::SeqCst) {
@@ -303,6 +307,7 @@ fn worker(
                 } else if recorder.is_some() {
                     Response::error(1, "already recording")
                 } else {
+                    notify_enabled = notify;
                     start_capture(
                         &shared,
                         &cancel,
@@ -312,6 +317,7 @@ fn worker(
                         output,
                         fps,
                         quality,
+                        notify,
                     )
                 };
                 let _ = reply.send(response);
@@ -323,7 +329,13 @@ fn worker(
                             AppState::Recording { pid } => !child_alive(*pid),
                             _ => false,
                         };
-                        stop_capture(&shared, &mut rec, &mut owns_pidfile, child_died)
+                        stop_capture(
+                            &shared,
+                            &mut rec,
+                            &mut owns_pidfile,
+                            child_died,
+                            notify_enabled,
+                        )
                     }
                     None => Response::error(1, "not recording"),
                 };
@@ -341,7 +353,8 @@ fn worker(
                     .filter(|pid| !child_alive(*pid));
                 if dead.is_some() {
                     let mut rec = recorder.take().expect("checked above");
-                    let resp = stop_capture(&shared, &mut rec, &mut owns_pidfile, true);
+                    let resp =
+                        stop_capture(&shared, &mut rec, &mut owns_pidfile, true, notify_enabled);
                     if let Some(err) = resp.error {
                         tracing::warn!(error = %err, "daemon capture ended early");
                     }
@@ -372,6 +385,7 @@ fn start_capture(
     output: Option<String>,
     fps: u32,
     quality: Quality,
+    notify: bool,
 ) -> Response {
     let mut settings = settings::load();
     if let Err(msg) = check_preferred_backend(&settings) {
@@ -422,7 +436,7 @@ fn start_capture(
         },
     );
 
-    match rec.start(target, output) {
+    match rec.start(target, output.clone()) {
         Ok(()) => match rec.state() {
             AppState::Recording { pid } => {
                 let pid = *pid;
@@ -435,10 +449,18 @@ fn start_capture(
                         part: part.clone(),
                     },
                 );
+                let target_desc = match target {
+                    Target::Region => "region",
+                    Target::Display => output.as_deref().unwrap_or("display"),
+                };
+                crate::app::notify::notify(
+                    notify,
+                    "Recording started",
+                    &format!("Capturing {target_desc}"),
+                );
                 *recorder = Some(rec);
                 Response::recording(pid, part)
             }
-            // Ok without Recording = cancelled region selection.
             _ => {
                 release_pidfile(owns_pidfile);
                 publish(shared, Snapshot::idle());
@@ -458,6 +480,7 @@ fn stop_capture(
     rec: &mut Recorder<WfRecorder>,
     owns_pidfile: &mut bool,
     child_died: bool,
+    notify: bool,
 ) -> Response {
     if let AppState::Recording { pid } = rec.state() {
         publish(
@@ -475,17 +498,22 @@ fn stop_capture(
             crate::files::retention::apply_for_settings(&settings::load());
             release_pidfile(owns_pidfile);
             publish(shared, Snapshot::idle());
+            crate::app::notify::notify(notify, "Recording saved", &path.display().to_string());
             Response::saved(&path)
         }
         (Ok(path), true) => {
             release_pidfile(owns_pidfile);
             publish(shared, Snapshot::failed());
-            Response::error(3, format!("capture ended early; saved {}", path.display()))
+            let msg = format!("capture ended early; saved {}", path.display());
+            crate::app::notify::notify(notify, "Recording ended early", &msg);
+            Response::error(3, msg)
         }
         (Err(e), _) => {
             release_pidfile(owns_pidfile);
             publish(shared, Snapshot::failed());
-            Response::error(3, format!("stop failed: {e}"))
+            let msg = format!("stop failed: {e}");
+            crate::app::notify::notify(notify, "Recording failed", &msg);
+            Response::error(3, msg)
         }
     }
 }

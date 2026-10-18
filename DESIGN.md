@@ -40,6 +40,7 @@ capture::process::ManagedChild
 ```
 
 Supporting: `app::pidfile` (single-instance control file),
+`app::notify` (desktop notifications via `notify-send`),
 `app::state` (`transition` is pure; invalid pairs are no-ops),
 `config::settings` (TOML, validation, tilde expansion),
 `files::naming` (`plan_output`/`finalize` with `.part` staging),

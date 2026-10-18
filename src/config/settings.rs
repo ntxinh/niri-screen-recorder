@@ -45,6 +45,8 @@ pub struct Settings {
     /// `hardware` (first probed hardware encoder, software fallback), or
     /// an explicit ffmpeg encoder name such as `h264_vaapi`.
     pub encoder: String,
+    /// Send desktop notifications on start, stop/saved, and failure.
+    pub notifications: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +65,7 @@ impl Default for Settings {
             cleanup_max_files: 20,
             cleanup_max_age_days: 30,
             encoder: "auto".into(),
+            notifications: true,
         }
     }
 }
@@ -200,5 +203,17 @@ mod tests {
         let old = super::Settings::from_toml_str("default_fps = 60").unwrap();
         assert_eq!(old.last_output, None);
         assert_eq!(old.default_fps, 60);
+    }
+    #[test]
+    fn notifications_roundtrip_and_default() {
+        let s = super::Settings {
+            notifications: false,
+            ..Default::default()
+        };
+        let parsed = super::Settings::from_toml_str(&toml::to_string(&s).unwrap()).unwrap();
+        assert!(!parsed.notifications);
+        // Config without notifications key defaults to true.
+        let default_config = super::Settings::from_toml_str("default_fps = 30").unwrap();
+        assert!(default_config.notifications);
     }
 }
