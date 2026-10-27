@@ -1,13 +1,9 @@
 // Niri Recorder — DankMaterialShell bar widget + Control Center tile.
 //
-// The widget only talks to the niri-recorder CLI: `status` is polled,
-// and start/stop use argv arrays (never a shell string). With the
-// `niri-recorder daemon` running, `start` forwards into the daemon and
-// returns immediately; without it, the foreground recorder keeps this
-// Process alive until the recording stops.
-//
-// UNVERIFIED: written against the DMS 1.6 plugin docs; not exercised in
-// a live DankMaterialShell session (see docs/DMS.md).
+// The widget talks to the niri-recorder CLI: `status` is polled every 1s,
+// and start/stop use argv arrays. When idle, the bar pill collapses
+// completely so it takes up zero space. While recording, it animates onto
+// the bar with a red indicator and live elapsed timer. Clicking stops it.
 
 import QtQuick
 import Quickshell
@@ -24,6 +20,22 @@ PluginComponent {
 
     property bool recording: false
     property bool pending: false
+    property int elapsedSeconds: 0
+    property var recordingStartTime: null
+
+    // Auto-hide: pill collapses to width: 0 when idle.
+    _visibilityOverride: true
+    _visibilityOverrideValue: root.recording || root.pending
+
+    function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
+    readonly property string elapsedDisplay: {
+        var h = Math.floor(elapsedSeconds / 3600);
+        var m = Math.floor((elapsedSeconds % 3600) / 60);
+        var s = elapsedSeconds % 60;
+        return h > 0 ? pad2(h) + ":" + pad2(m) + ":" + pad2(s)
+                     : pad2(m) + ":" + pad2(s);
+    }
 
     function refresh() {
         if (!statusProc.running)
@@ -35,6 +47,8 @@ PluginComponent {
             stopProc.running = true;
         } else {
             pending = true;
+            recordingStartTime = Date.now();
+            elapsedSeconds = 0;
             startProc.running = true;
         }
         refreshSoon.restart();
@@ -44,7 +58,17 @@ PluginComponent {
         id: statusProc
         command: ["niri-recorder", "status"]
         stdout: SplitParser {
-            onRead: line => root.recording = line.trim().startsWith("recording")
+            onRead: line => {
+                var wasRecording = root.recording;
+                root.recording = line.trim().startsWith("recording");
+                if (root.recording && !wasRecording && !root.recordingStartTime) {
+                    root.recordingStartTime = Date.now();
+                    root.elapsedSeconds = 0;
+                } else if (!root.recording && wasRecording) {
+                    root.recordingStartTime = null;
+                    root.elapsedSeconds = 0;
+                }
+            }
         }
     }
 
@@ -53,8 +77,11 @@ PluginComponent {
         command: ["niri-recorder", "start", "--target", "display"]
         onExited: (exitCode) => {
             root.pending = false;
-            if (exitCode !== 0)
+            if (exitCode !== 0) {
+                root.recordingStartTime = null;
+                root.elapsedSeconds = 0;
                 ToastService.showError("Niri Recorder", "start failed (exit " + exitCode + ")");
+            }
             refreshSoon.restart();
         }
     }
@@ -71,25 +98,37 @@ PluginComponent {
 
     Timer {
         id: refreshSoon
-        interval: 400
+        interval: 300
         repeat: false
         onTriggered: root.refresh()
     }
 
-    // Cheap poll: `status` is a pidfile read, not capture work.
+    // Status polling: 1000ms
     Timer {
-        interval: 2000
+        interval: 1000
         running: true
         repeat: true
         triggeredOnStart: true
         onTriggered: root.refresh()
     }
 
+    // Elapsed timer: ticks every 1s while recording
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.recording
+        onTriggered: {
+            if (root.recording && root.recordingStartTime) {
+                root.elapsedSeconds = Math.max(0, Math.floor((Date.now() - root.recordingStartTime) / 1000));
+            }
+        }
+    }
+
     // --- Control Center tile --------------------------------------------
     ccWidgetIcon: root.recording ? "stop_circle" : "radio_button_checked"
     ccWidgetPrimaryText: "Niri Recorder"
     ccWidgetSecondaryText: root.recording
-        ? "Recording — click to stop"
+        ? "Recording (" + root.elapsedDisplay + ") — click to stop"
         : (root.pending ? "Starting…" : "Idle — click to record")
     ccWidgetIsActive: root.recording || root.pending
     onCcWidgetToggled: root.toggle()
@@ -105,15 +144,14 @@ PluginComponent {
                 spacing: Theme.spacingS
 
                 DankIcon {
-                    name: root.recording ? "radio_button_checked" : "radio_button_unchecked"
+                    name: root.pending ? "hourglass_top" : "radio_button_checked"
                     size: Theme.iconSize
-                    color: root.recording ? Theme.error : Theme.surfaceVariantText
+                    color: root.pending ? Theme.primary : Theme.error
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
                 StyledText {
-                    visible: root.recording
-                    text: "REC"
+                    text: root.pending ? "REC …" : "REC " + root.elapsedDisplay
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.error
                     anchors.verticalCenter: parent.verticalCenter
@@ -138,15 +176,14 @@ PluginComponent {
                 spacing: Theme.spacingXS
 
                 DankIcon {
-                    name: root.recording ? "radio_button_checked" : "radio_button_unchecked"
+                    name: root.pending ? "hourglass_top" : "radio_button_checked"
                     size: Theme.iconSize
-                    color: root.recording ? Theme.error : Theme.surfaceVariantText
+                    color: root.pending ? Theme.primary : Theme.error
                     anchors.horizontalCenter: parent.horizontalCenter
                 }
 
                 StyledText {
-                    visible: root.recording
-                    text: "REC"
+                    text: root.elapsedDisplay
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.error
                     anchors.horizontalCenter: parent.horizontalCenter
